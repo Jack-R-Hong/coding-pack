@@ -6,14 +6,12 @@ requires:
   - plugin: bmad-method
   - plugin: plugin-git-ops
   - plugin: plugin-memory
-    optional: true
 steps:
   # Step 0 (optional): Impact analysis via knowledge graph
   - id: memory_impact
     type: function
     depends_on: []
     executor: plugin-memory
-    optional: true
     config:
       command: ["plugin-memory", "query", "{{input}}"]
       timeout_seconds: 60
@@ -74,7 +72,6 @@ steps:
     type: function
     depends_on: [regression_check]
     executor: plugin-memory
-    optional: true
     config:
       command: ["plugin-memory", "detect-changes"]
       timeout_seconds: 60
@@ -92,7 +89,6 @@ steps:
     type: function
     depends_on: [git_commit]
     executor: plugin-memory
-    optional: true
     config:
       command: ["plugin-memory", "reindex", "."]
       timeout_seconds: 120

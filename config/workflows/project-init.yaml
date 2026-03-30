@@ -5,7 +5,6 @@ requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
   - plugin: plugin-board
-    optional: true
 steps:
   # Step 1: Architect scaffolds project structure
   - id: scaffold
@@ -31,7 +30,6 @@ steps:
     type: agent
     depends_on: [scaffold]
     executor: bmad-method
-    optional: true
     config:
       model_tier: balanced
       system_prompt: |

@@ -8,14 +8,12 @@ requires:
   - plugin: plugin-git-worktree
   - plugin: plugin-test-runner
   - plugin: plugin-memory
-    optional: true
 steps:
   # Step 0 (optional): Query knowledge graph for context
   - id: memory_context
     type: function
     depends_on: []
     executor: plugin-memory
-    optional: true
     config:
       command: ["plugin-memory", "query", "{{input}}"]
       timeout_seconds: 60
@@ -93,6 +91,7 @@ steps:
     executor: plugin-test-runner
     config:
       working_dir: "{{working_dir}}"
+      command: ["plugin-test-runner", "validate"]
       action: validate
       timeout_seconds: 120
 
@@ -118,7 +117,6 @@ steps:
     type: function
     depends_on: [qa_review]
     executor: plugin-memory
-    optional: true
     config:
       working_dir: "{{working_dir}}"
       command: ["plugin-memory", "detect-changes"]
@@ -137,7 +135,6 @@ steps:
     type: function
     depends_on: [git_commit]
     executor: plugin-memory
-    optional: true
     config:
       command: ["plugin-memory", "reindex", "."]
       timeout_seconds: 120
@@ -156,7 +153,6 @@ steps:
     type: agent
     depends_on: [git_commit]
     executor: provider-claude-code
-    optional: true
     config:
       model_tier: fast
       system_prompt: |
@@ -175,7 +171,6 @@ steps:
     type: function
     depends_on: [git_push, generate_pr_body]
     executor: plugin-git-ops
-    optional: true
     config:
       command: ["plugin-git-pr", "create-pr", "{{pr_title}}", "{{pr_body}}{{issue_closing_ref}}"]
       timeout_seconds: 30

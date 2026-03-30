@@ -5,14 +5,12 @@ requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
   - plugin: plugin-memory
-    optional: true
 steps:
   # Step 0 (optional): Knowledge graph context
   - id: memory_context
     type: function
     depends_on: []
     executor: plugin-memory
-    optional: true
     config:
       command: ["plugin-memory", "context", "{{input}}"]
       timeout_seconds: 60

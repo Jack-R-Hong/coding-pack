@@ -4,14 +4,12 @@ description: "Multi-layer code review: adversarial + edge-case analysis in paral
 requires:
   - plugin: bmad-method
   - plugin: plugin-memory
-    optional: true
 steps:
   # Step 0 (optional): Knowledge graph context for review
   - id: memory_context
     type: function
     depends_on: []
     executor: plugin-memory
-    optional: true
     config:
       command: ["plugin-memory", "query", "{{input}}"]
       timeout_seconds: 60

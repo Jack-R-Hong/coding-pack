@@ -5,37 +5,22 @@ requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
   - plugin: plugin-git-ops
-  - plugin: plugin-test-runner
-  - plugin: plugin-memory
-    optional: true
 steps:
-  # Step 0 (optional): Quick knowledge graph lookup
-  - id: memory_context
-    type: function
-    depends_on: []
-    executor: plugin-memory
-    optional: true
-    config:
-      command: ["plugin-memory", "query", "{{input}}"]
-      timeout_seconds: 60
-
   # Step 1: Quick Flow Solo Dev creates lean spec
   - id: quick_spec
     type: agent
-    depends_on: [memory_context]
+    depends_on: []
     executor: bmad-method
     config:
       model_tier: fast
       system_prompt: |
-        You are bmad/quick-flow. Create a minimal but complete tech spec:
+        You are bmad/quick-flow-solo-dev. Create a minimal but complete tech spec:
         - What to build (scope boundary)
         - Key implementation decisions
         - Files to create/modify
         - Test approach (1-2 sentences)
         Keep it lean. No bureaucracy.
-      user_prompt_template: "Quick spec for: {{input}}"
       max_tokens: 2048
-      context_from: [memory_context]
       timeout_seconds: 180
 
   # Step 2: Implement immediately
@@ -48,57 +33,7 @@ steps:
       system_prompt: |
         You are a fast-moving developer. Implement cleanly and efficiently per the spec.
         Ship working code with basic test coverage.
-      user_prompt_template: "Implement: {{input}}"
       max_tokens: 4096
       context_from: [quick_spec]
       timeout_seconds: 600
-      retry:
-        max_attempts: 2
-        on_failure_of: run_tests
 
-  # Step 2b: Run tests
-  - id: run_tests
-    type: function
-    depends_on: [implement]
-    executor: plugin-test-runner
-    config:
-      action: validate
-      timeout_seconds: 120
-
-  # Step 3: Commit
-  - id: git_commit
-    type: function
-    depends_on: [run_tests]
-    executor: git-ops
-    config:
-      command: ["bash", "-c", "git add -A && git commit -m \"feat: {{input}}\""]
-
-  # Step 4: Re-index after commit
-  - id: memory_reindex
-    type: function
-    depends_on: [git_commit]
-    executor: plugin-memory
-    optional: true
-    config:
-      command: ["plugin-memory", "reindex", "."]
-      timeout_seconds: 120
-
-  # Step 5: Push (optional for quick dev)
-  - id: git_push
-    type: function
-    depends_on: [git_commit]
-    executor: plugin-git-ops
-    optional: true
-    config:
-      command: ["plugin-git-pr", "push"]
-      timeout_seconds: 30
-
-  # Step 6: Create PR (optional for quick dev)
-  - id: create_pr
-    type: function
-    depends_on: [git_push]
-    executor: plugin-git-ops
-    optional: true
-    config:
-      command: ["plugin-git-pr", "create-pr", "feat: {{input}}"]
-      timeout_seconds: 30
