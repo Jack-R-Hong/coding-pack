@@ -779,6 +779,130 @@ steps:
         assert!(result.issues.iter().any(|i| i.contains("convergence")));
     }
 
+    // --- Fixture-based workflow validation tests ---
+    // These use real workflow fixture files to exercise more complex validation
+    // code paths (diamond DAGs, context_from, multi-step agent workflows, etc.)
+
+    /// Helper: resolve the path to a workflow fixture file.
+    /// Tests using fixtures must be run from the crate root (cargo test does this).
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/workflows")
+            .join(name)
+    }
+
+    /// Mock plugins dir pointing to test fixtures so executor checks pass.
+    fn mock_plugins_dir() -> std::path::PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mock-plugins")
+    }
+
+    #[test]
+    fn fixture_parallel_diamond_dag_validates() {
+        // Diamond DAG: root -> branch_a + branch_b -> join
+        // Exercises multi-parent depends_on and cycle detection on a valid DAG.
+        let path = fixture_path("test-parallel-functions.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_context_flow_validates() {
+        // context_from referencing two valid producer steps.
+        // Exercises the context_from reference validation on a valid case.
+        let path = fixture_path("test-context-flow.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_function_only_chain_validates() {
+        // Linear 3-step function chain with depends_on.
+        let path = fixture_path("test-function-only.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_quality_gate_agent_steps_validate() {
+        // Agent step with system_prompt + requires section.
+        // Executor binaries (bmad-method, provider-claude-code) are in mock-plugins dir.
+        let path = fixture_path("test-quality-gate.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_agent_mock_multi_step_validates() {
+        // Two agent steps with depends_on, context_from, and requires.
+        let path = fixture_path("test-agent-mock.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_missing_plugin_reports_requires_issue() {
+        // requires: nonexistent-plugin. Validates the file-based requires check.
+        let path = fixture_path("test-missing-plugin.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(!result.valid);
+        assert!(
+            result
+                .issues
+                .iter()
+                .any(|i| i.contains("nonexistent-plugin")),
+            "should report missing required plugin, got: {:?}",
+            result.issues
+        );
+    }
+
+    #[test]
+    fn fixture_retry_loop_validates() {
+        // Agent step with retry config + requires + executor pointing to mock-plugins.
+        let path = fixture_path("test-retry-loop.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_template_vars_validates() {
+        // Function steps with template variables in commands.
+        let path = fixture_path("test-template-vars.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_timeout_step_validates() {
+        // Function step with short timeout and executor.
+        let path = fixture_path("test-timeout.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_optional_skip_validates() {
+        // Step with optional: true flag (validator ignores unknown fields gracefully).
+        let path = fixture_path("test-optional-skip.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_required_fail_validates() {
+        // Required step that fails at runtime; structurally valid for the validator.
+        let path = fixture_path("test-required-fail.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
+    #[test]
+    fn fixture_pr_extraction_validates() {
+        // Agent step followed by function step using PR fields; complex requires.
+        let path = fixture_path("test-pr-extraction.yaml");
+        let result = validate_workflow_file(&path, &mock_plugins_dir()).unwrap();
+        assert!(result.valid, "issues: {:?}", result.issues);
+    }
+
     // --- agents.yaml validation tests ---
 
     #[test]

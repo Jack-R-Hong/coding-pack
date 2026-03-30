@@ -1,0 +1,79 @@
+name: coding-hotfix
+version: 1
+description: "Minimal fast hotfix: branch from main/release -> apply targeted fix -> critical tests -> PR"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+  - plugin: plugin-git-ops
+steps:
+  # Step 1: Create hotfix branch from main or release
+  - id: branch
+    type: function
+    depends_on: []
+    executor: plugin-git-ops
+    config:
+      command: ["bash", "-c", "git checkout {{base_branch:-main}} && git pull && git checkout -b hotfix/{{branch_name}}"]
+      timeout_seconds: 30
+
+  # Step 2: Apply minimal targeted fix
+  - id: fix
+    type: agent
+    depends_on: [branch]
+    executor: bmad-method
+    config:
+      model_tier: fast
+      system_prompt: |
+        You are bmad/quick-flow-solo-dev. Apply a minimal, targeted hotfix:
+        - Fix ONLY the reported issue — no refactoring, no improvements
+        - Keep the change surface as small as possible
+        - Add a regression test for the specific fix
+        - Verify the fix compiles
+        Speed and precision matter. This is a production hotfix.
+      user_prompt_template: "Apply hotfix: {{input}}"
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 3: Run critical-path tests only
+  - id: test
+    type: agent
+    depends_on: [fix]
+    executor: bmad-method
+    config:
+      model_tier: fast
+      system_prompt: |
+        You are bmad/qa. Run critical-path tests only for this hotfix:
+        - Verify the specific bug is fixed
+        - Run regression tests for the affected module
+        - Confirm no existing tests are broken
+        Do not run full test suite — focus on the affected area.
+        End your review with a verdict line in exactly this format:
+        verdict: approve OR verdict: request-changes OR verdict: reject
+      user_prompt_template: "Validate hotfix with critical-path tests"
+      max_tokens: 2048
+      context_from: [fix]
+      timeout_seconds: 180
+
+  # Step 4: Commit the hotfix
+  - id: git_commit
+    type: function
+    depends_on: [test]
+    config:
+      command: ["bash", "-c", "git add -A && git commit -m \"hotfix: {{input}}\""]
+
+  # Step 5: Push branch to remote
+  - id: git_push
+    type: function
+    depends_on: [git_commit]
+    executor: plugin-git-ops
+    config:
+      command: ["plugin-git-pr", "push"]
+      timeout_seconds: 30
+
+  # Step 6: Create PR targeting main/release
+  - id: pr
+    type: function
+    depends_on: [git_push]
+    executor: plugin-git-ops
+    config:
+      command: ["plugin-git-pr", "create-pr", "hotfix: {{input}}", "{{issue_closing_ref}}"]
+      timeout_seconds: 30

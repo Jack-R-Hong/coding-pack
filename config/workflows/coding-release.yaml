@@ -1,0 +1,71 @@
+name: coding-release
+version: 1
+description: "Release cutting: changelog generation -> version bump -> tag -> build -> release PR"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+  - plugin: plugin-git-ops
+steps:
+  # Step 1: Generate changelog from git log
+  - id: changelog
+    type: agent
+    depends_on: []
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/tech-writer. Generate a changelog from the git log:
+        - Group commits by category (Features, Bug Fixes, Refactoring, Docs, etc.)
+        - Use conventional commit prefixes to categorize
+        - Write user-facing descriptions (not raw commit messages)
+        - Include breaking changes section if applicable
+        - Follow Keep a Changelog format
+      user_prompt_template: "Generate changelog for release: {{input}}"
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 2: Bump version in manifest files
+  - id: version_bump
+    type: agent
+    depends_on: [changelog]
+    executor: provider-claude-code
+    config:
+      model_tier: fast
+      system_prompt: |
+        You are a senior developer bumping the project version for a release.
+        Update version strings in all relevant manifest files:
+        - Cargo.toml (version field)
+        - package.json (version field, if present)
+        - Any other version constants in the codebase
+        Use semantic versioning. Determine bump type (major/minor/patch) from the changelog.
+      user_prompt_template: "Bump version for release: {{input}}"
+      max_tokens: 2048
+      context_from: [changelog]
+      timeout_seconds: 180
+
+  # Step 3: Create release tag
+  - id: tag
+    type: function
+    depends_on: [version_bump]
+    executor: plugin-git-ops
+    config:
+      command: ["bash", "-c", "git add -A && git commit -m \"chore(release): {{input}}\" && git tag -a \"v{{version}}\" -m \"Release {{version}}\""]
+      timeout_seconds: 30
+
+  # Step 4: Run build to verify release artifact
+  - id: build
+    type: function
+    depends_on: [tag]
+    executor: plugin-git-ops
+    config:
+      command: ["bash", "-c", "cargo build --release 2>&1 || npm run build 2>&1 || echo 'no build system found'"]
+      timeout_seconds: 600
+
+  # Step 5: Create release PR
+  - id: pr
+    type: function
+    depends_on: [build]
+    executor: plugin-git-ops
+    config:
+      command: ["plugin-git-pr", "create-pr", "chore(release): {{input}}"]
+      timeout_seconds: 30

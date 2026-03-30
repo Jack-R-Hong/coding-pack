@@ -429,4 +429,52 @@ mod tests {
         assert_eq!(injector.injector_name(), "bmad-agent-injector");
         assert_eq!(injector.priority(), 100);
     }
+
+    // ── CSV edge case tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_split_csv_rows_empty_string() {
+        let rows = split_csv_rows("");
+        assert!(rows.is_empty(), "expected empty vec, got: {:?}", rows);
+    }
+
+    #[test]
+    fn test_split_csv_rows_header_only() {
+        let rows = split_csv_rows("name,title,role");
+        // split_csv_rows returns all logical rows including the header
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0], "name,title,role");
+        // When used by BmadAgentInjector, the first row is the header and
+        // the rest (none) are data rows, so agent_count would be 0.
+    }
+
+    #[test]
+    fn test_split_csv_rows_unclosed_quote() {
+        // An unclosed quote should not panic; the remaining content is
+        // pushed as the final row.
+        let input = "name,title\n\"unclosed value,still going";
+        let rows = split_csv_rows(input);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], "name,title");
+        assert_eq!(rows[1], "\"unclosed value,still going");
+    }
+
+    #[test]
+    fn test_parse_csv_row_fewer_columns_than_expected() {
+        // A row with only 2 columns when we expect 7 should not panic.
+        let fields = parse_csv_row("alice,dev");
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0], "alice");
+        assert_eq!(fields[1], "dev");
+
+        // BmadAgentInjector skips rows with insufficient columns, so let's
+        // verify that behavior via the injector as well.
+        let csv = "name,displayName,title,role,identity,communicationStyle,principles\nalice,dev";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test-manifest.csv");
+        std::fs::write(&path, csv).unwrap();
+        let injector = BmadAgentInjector::new(&path);
+        // The short row should be skipped, so no agents are loaded.
+        assert_eq!(injector.agent_count(), 0);
+    }
 }

@@ -1,0 +1,87 @@
+name: coding-migration
+version: 1
+description: "Migration workflow: architect plans strategy -> dev implements -> QA validates -> architect verifies integrity"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+steps:
+  # Step 1: Architect designs migration strategy
+  - id: plan
+    type: agent
+    depends_on: []
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/architect. Design a migration strategy:
+        - Identify what is being migrated (database schema, API version, dependency, etc.)
+        - Assess risks: data loss, downtime, backward compatibility
+        - Define incremental migration steps (each must be independently reversible)
+        - Create a rollback plan for each step
+        - Identify required data transformations and validation checks
+        - Estimate impact on dependent systems and services
+      user_prompt_template: "Plan migration strategy for: {{input}}"
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 2: Implement migration
+  - id: implement
+    type: agent
+    depends_on: [plan]
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are a senior developer implementing a migration.
+        Follow the architect's migration plan strictly:
+        - Implement migration scripts with proper error handling
+        - Include rollback scripts for each migration step
+        - Add data validation checks before and after migration
+        - Ensure idempotency — migrations should be safe to re-run
+        - Update all affected code paths to work with the new schema/API
+      user_prompt_template: "Implement migration: {{input}}"
+      max_tokens: 8192
+      context_from: [plan]
+      timeout_seconds: 600
+
+  # Step 3: QA validates migration with rollback plan
+  - id: test
+    type: agent
+    depends_on: [implement]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/qa. Validate the migration implementation:
+        - Test forward migration with sample data
+        - Test rollback procedure end-to-end
+        - Verify data integrity after migration (no data loss, correct transformations)
+        - Check edge cases: empty tables, null values, large datasets
+        - Verify dependent services still function correctly
+        End your review with a verdict line in exactly this format:
+        verdict: approve OR verdict: request-changes OR verdict: reject
+      user_prompt_template: "Validate migration and rollback plan"
+      max_tokens: 4096
+      context_from: [plan, implement]
+      timeout_seconds: 300
+
+  # Step 4: Architect verifies data integrity and backward compatibility
+  - id: review
+    type: agent
+    depends_on: [test]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/architect. Final verification of the migration:
+        - Confirm data integrity guarantees are met
+        - Verify backward compatibility with existing clients
+        - Review rollback plan completeness
+        - Assess operational readiness (monitoring, alerts, runbook)
+        - Sign off on production deployment readiness
+        End your review with a verdict line in exactly this format:
+        verdict: approve OR verdict: request-changes OR verdict: reject
+      user_prompt_template: "Verify migration integrity and backward compatibility"
+      max_tokens: 4096
+      context_from: [plan, implement, test]
+      timeout_seconds: 300

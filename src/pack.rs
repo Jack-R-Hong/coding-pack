@@ -1,3 +1,4 @@
+use crate::execution_history;
 use crate::util::is_executable;
 use crate::validator;
 use crate::workspace::WorkspaceConfig;
@@ -80,11 +81,18 @@ pub fn execute_action(input: &CodingPackInput) -> Result<String, WitPluginError>
                 )));
             }
             let user_input = input.input.as_deref().unwrap_or("");
-            to_json_string(crate::plugin_bridge::execute_workflow(
+            let result = crate::plugin_bridge::execute_workflow(
                 workflow_id,
                 user_input,
                 &config,
-            ))
+            );
+
+            // Record execution history (best-effort, don't fail on I/O errors)
+            let success = result.is_ok();
+            let record = execution_history::new_record(workflow_id, success);
+            let _ = execution_history::save_execution_record(&config, &record);
+
+            to_json_string(result)
         }
         "auto-dev-status" => to_json_string(crate::plugin_bridge::auto_loop_status(&config)),
         "auto-dev-next" => {
@@ -145,8 +153,14 @@ pub fn execute_action(input: &CodingPackInput) -> Result<String, WitPluginError>
             to_json_string(crate::plugin_bridge::build_fix_context(pr_number))
         }
 
+        // ── Delegated to plugin-test-runner via plugin_bridge ──────────
+        "run-tests" => {
+            serde_json::to_string(&crate::plugin_bridge::run_tests(&config)?)
+                .map_err(|e| WitPluginError::internal(format!("JSON error: {e}")))
+        }
+
         other => Err(WitPluginError::not_found(format!(
-            "Unknown action: '{}'. Available: validate-pack, validate-workflows, list-workflows, list-plugins, status, execute-workflow, data-query, data-mutate, auto-dev-status, auto-dev-next, auto-dev-watch, sync-github-issues, cleanup-worktrees, worktree-status, recover-worktrees, check-pr-reviews, build-fix-context, generate-agents-yaml",
+            "Unknown action: '{}'. Available: validate-pack, validate-workflows, list-workflows, list-plugins, status, execute-workflow, data-query, data-mutate, auto-dev-status, auto-dev-next, auto-dev-watch, sync-github-issues, cleanup-worktrees, worktree-status, recover-worktrees, check-pr-reviews, build-fix-context, run-tests, generate-agents-yaml",
             other
         ))),
     }
@@ -453,6 +467,28 @@ fn execute_data_query(
                 .unwrap_or("");
             task_agent_info_value(task_id, config)?
         }
+        ep if ep.starts_with("agents/") && ep != "agents/list" => {
+            let agent_id = ep.strip_prefix("agents/").unwrap_or("");
+            get_agent_detail_value(agent_id, config)?
+        }
+        ep if ep.starts_with("worktrees/") && ep != "worktrees/list" => {
+            let _worktree_id = ep.strip_prefix("worktrees/").unwrap_or("");
+            let status = crate::plugin_bridge::worktree_status(config)?;
+            // If the response contains a list, filter to the requested worktree
+            if let Some(worktrees) = status.get("worktrees").and_then(|w| w.as_array()) {
+                if let Some(wt) = worktrees.iter().find(|w| {
+                    w.get("task_id").and_then(|v| v.as_str()) == Some(_worktree_id)
+                        || w.get("id").and_then(|v| v.as_str()) == Some(_worktree_id)
+                }) {
+                    wt.clone()
+                } else {
+                    // Return full status if no matching worktree found by ID
+                    status
+                }
+            } else {
+                status
+            }
+        }
         ep if ep.starts_with("workflows/") => {
             let id = ep.strip_prefix("workflows/").unwrap_or("");
             get_workflow_detail_value(id, config)?
@@ -463,7 +499,7 @@ fn execute_data_query(
         }
         _ => {
             return Err(WitPluginError::not_found(format!(
-                "Unknown data endpoint: '{}'. Available: status, status/health, workflows/list, agents/list, workflows/{{id}}, tasks/{{id}}/workflow-context, tasks/{{id}}/agent-info, board/summary, board/data, board/boards/list, board/epics/list, board/filters, board/epics/{{id}}, board/stories/{{id}}, board/assignments/{{id}}, worktrees/list",
+                "Unknown data endpoint: '{}'. Available: status, status/health, workflows/list, agents/list, agents/{{id}}, worktrees/{{id}}, workflows/{{id}}, tasks/{{id}}/workflow-context, tasks/{{id}}/agent-info, board/summary, board/data, board/boards/list, board/epics/list, board/filters, board/epics/{{id}}, board/stories/{{id}}, board/assignments/{{id}}, worktrees/list",
                 endpoint
             )));
         }
@@ -650,6 +686,7 @@ fn list_workflows_detail_value(
     config: &WorkspaceConfig,
 ) -> Result<serde_json::Value, WitPluginError> {
     let mut workflows = Vec::new();
+    let history = execution_history::load_execution_history(config);
 
     if config.workflows_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&config.workflows_dir) {
@@ -672,6 +709,7 @@ fn list_workflows_detail_value(
                             } else {
                                 "coding"
                             };
+                            let stats = execution_history::get_workflow_stats(&history, id);
                             workflows.push(serde_json::json!({
                                 "id": id,
                                 "description": wf.get("description").and_then(|d| d.as_str()).unwrap_or(""),
@@ -680,6 +718,9 @@ fn list_workflows_detail_value(
                                 "requires": wf.get("requires").and_then(|r| r.as_array()).map(|arr| {
                                     arr.iter().filter_map(|r| r.get("plugin").and_then(|p| p.as_str())).collect::<Vec<_>>().join(", ")
                                 }).unwrap_or_default(),
+                                "last_run": stats.last_run,
+                                "total_runs": stats.total_runs,
+                                "success_rate": stats.success_rate,
                             }));
                         }
                     }
@@ -695,6 +736,93 @@ fn list_workflows_detail_value(
     });
 
     Ok(serde_json::json!(workflows))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Count how many workflows reference each agent by scanning workflow YAML files.
+///
+/// Agents are referenced in workflows via three patterns:
+/// - `system_prompt` containing `You are bmad/<name>`
+/// - `agent: bmad/<name>` in session participants
+/// - `agent_name: bmad/<name>` in step config
+fn count_agent_workflow_assignments(
+    config: &WorkspaceConfig,
+) -> std::collections::HashMap<String, usize> {
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    if !config.workflows_dir.exists() {
+        return counts;
+    }
+
+    let entries = match std::fs::read_dir(&config.workflows_dir) {
+        Ok(e) => e,
+        Err(_) => return counts,
+    };
+
+    let prefixes = ["You are ", "agent: ", "agent_name: "];
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Collect unique agents referenced in this workflow
+        let mut seen_in_workflow: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            for prefix in &prefixes {
+                if let Some(rest) = trimmed.strip_prefix("- ") {
+                    // Handle YAML list items like "- agent: bmad/qa"
+                    if let Some(agent_ref) = rest.trim().strip_prefix(prefix) {
+                        if let Some(agent_id) = extract_bmad_agent_id(agent_ref) {
+                            seen_in_workflow.insert(agent_id);
+                        }
+                    }
+                }
+                if let Some(agent_ref) = trimmed.strip_prefix(prefix) {
+                    if let Some(agent_id) = extract_bmad_agent_id(agent_ref) {
+                        seen_in_workflow.insert(agent_id);
+                    }
+                }
+            }
+        }
+
+        for agent_id in seen_in_workflow {
+            *counts.entry(agent_id).or_insert(0) += 1;
+        }
+    }
+
+    counts
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// Extract a `bmad/<name>` agent ID from text that starts at the agent reference.
+/// Returns `None` if the text doesn't start with `bmad/`.
+fn extract_bmad_agent_id(text: &str) -> Option<String> {
+    let text = text.trim();
+    if !text.starts_with("bmad/") {
+        return None;
+    }
+    // Agent ID is "bmad/" followed by word chars and hyphens
+    let id: String = text
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '/' || *c == '-' || *c == '_')
+        .collect();
+    // Strip trailing punctuation that might have been included
+    let id = id.trim_end_matches(|c: char| c == '.' || c == ',');
+    if id.len() > "bmad/".len() {
+        Some(id.to_string())
+    } else {
+        None
+    }
 }
 
 /// BMAD agent list for dashboard table view.
@@ -713,6 +841,8 @@ fn list_agents_value(config: &WorkspaceConfig) -> Result<serde_json::Value, WitP
         return Ok(serde_json::json!([]));
     }
 
+    let workflow_counts = count_agent_workflow_assignments(config);
+
     let result: Vec<serde_json::Value> = agents
         .iter()
         .map(|a| {
@@ -724,6 +854,8 @@ fn list_agents_value(config: &WorkspaceConfig) -> Result<serde_json::Value, WitP
                 .map(|(name, role)| (name.to_string(), role.to_string()))
                 .unwrap_or_else(|| (a.name.clone(), String::new()));
 
+            let assigned_workflows = workflow_counts.get(&a.name).copied().unwrap_or(0);
+
             serde_json::json!({
                 "id": a.name,
                 "name": display_name,
@@ -732,6 +864,7 @@ fn list_agents_value(config: &WorkspaceConfig) -> Result<serde_json::Value, WitP
                 "model_tier": a.model_tier.as_deref().unwrap_or("balanced"),
                 "skills": a.skills.as_ref().cloned().unwrap_or_default(),
                 "tools": a.tools.as_ref().cloned().unwrap_or_default(),
+                "assigned_workflows": assigned_workflows,
             })
         })
         .collect();
@@ -743,6 +876,54 @@ fn list_agents_value(config: &WorkspaceConfig) -> Result<serde_json::Value, WitP
 fn list_agents_value(_config: &WorkspaceConfig) -> Result<serde_json::Value, WitPluginError> {
     // Fallback for WASM builds -- registry not available
     Ok(serde_json::json!([]))
+}
+
+/// Single agent detail for dashboard detail view.
+/// Looks up agent by ID from the BMAD agent registry.
+#[cfg(not(target_arch = "wasm32"))]
+fn get_agent_detail_value(
+    agent_id: &str,
+    config: &WorkspaceConfig,
+) -> Result<serde_json::Value, WitPluginError> {
+    let manifest_path = config.base_dir.join("_bmad/_config/agent-manifest.csv");
+    let registry = crate::agent_registry::BmadAgentRegistry::new(&manifest_path);
+
+    let agents = {
+        use pulse_plugin_sdk::traits::agent_definition::AgentDefinitionProvider;
+        registry.list_agents(None)
+    };
+
+    let agent = agents
+        .iter()
+        .find(|a| a.name == agent_id)
+        .ok_or_else(|| WitPluginError::not_found(format!("Agent '{}' not found", agent_id)))?;
+
+    let (display_name, role) = agent
+        .description
+        .as_deref()
+        .and_then(|d| d.split_once(" \u{2014} "))
+        .map(|(name, role)| (name.to_string(), role.to_string()))
+        .unwrap_or_else(|| (agent.name.clone(), String::new()));
+
+    Ok(serde_json::json!({
+        "id": agent.name,
+        "name": display_name,
+        "role": role,
+        "description": agent.description.as_deref().unwrap_or(""),
+        "model_tier": agent.model_tier.as_deref().unwrap_or("balanced"),
+        "skills": agent.skills.as_ref().cloned().unwrap_or_default(),
+    }))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn get_agent_detail_value(
+    agent_id: &str,
+    _config: &WorkspaceConfig,
+) -> Result<serde_json::Value, WitPluginError> {
+    Err(WitPluginError::not_found(format!(
+        "Agent '{}' not found (registry not available in WASM)",
+        agent_id
+    )))
 }
 
 /// Single workflow detail for dashboard detail view.
@@ -783,15 +964,32 @@ fn get_workflow_detail_value(
         "coding"
     };
 
+    let history = execution_history::load_execution_history(config);
+    let stats = execution_history::get_workflow_stats(&history, workflow_id);
+    let recent = execution_history::get_recent_executions(&history, workflow_id, 10);
+    let recent_executions: Vec<serde_json::Value> = recent
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "timestamp": r.timestamp,
+                "success": r.success,
+            })
+        })
+        .collect();
+
     Ok(serde_json::json!({
         "id": workflow_id,
         "description": wf.get("description").and_then(|d| d.as_str()).unwrap_or(""),
         "category": category,
         "step_count": steps.len(),
-        "step_pipeline": step_pipeline.join(" → "),
+        "step_pipeline": step_pipeline.join(" \u{2192} "),
         "requires": wf.get("requires").and_then(|r| r.as_array()).map(|arr| {
             arr.iter().filter_map(|r| r.get("plugin").and_then(|p| p.as_str())).collect::<Vec<_>>().join(", ")
         }).unwrap_or_default(),
+        "last_run": stats.last_run,
+        "total_runs": stats.total_runs,
+        "success_rate": stats.success_rate,
+        "recent_executions": recent_executions,
     }))
 }
 
@@ -809,10 +1007,55 @@ fn execute_data_mutate(
         return serde_json::to_string_pretty(&result)
             .map_err(|e| WitPluginError::internal(format!("JSON serialization error: {e}")));
     }
-    Err(WitPluginError::not_found(format!(
-        "Unknown mutation endpoint: '{}'. Available: board/sync, board/status/{{id}}, board/epics, board/epics/{{id}}, board/stories, board/stories/{{id}}, board/assignments, board/assignments/{{id}}",
-        endpoint
-    )))
+    let result = match endpoint {
+        // Execute Workflow form submit
+        "workflows/execute" => {
+            let workflow_id = payload
+                .get("workflow_id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| {
+                    WitPluginError::invalid_input("workflows/execute requires 'workflow_id' in payload")
+                })?;
+            let input = payload
+                .get("input")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            crate::plugin_bridge::execute_workflow(workflow_id, input, config)?
+        }
+        // Worktree cleanup: worktrees/{id}/cleanup
+        ep if ep.starts_with("worktrees/") && ep.ends_with("/cleanup") => {
+            let _task_id = ep
+                .strip_prefix("worktrees/")
+                .and_then(|s| s.strip_suffix("/cleanup"))
+                .unwrap_or("");
+            crate::plugin_bridge::cleanup_worktrees(config)?
+        }
+        // Workflow table row action: workflows/{id}/execute
+        ep if ep.starts_with("workflows/") && ep.ends_with("/execute") => {
+            let workflow_id = ep
+                .strip_prefix("workflows/")
+                .and_then(|s| s.strip_suffix("/execute"))
+                .unwrap_or("");
+            if workflow_id.is_empty() {
+                return Err(WitPluginError::invalid_input(
+                    "workflow ID cannot be empty in workflows/{id}/execute",
+                ));
+            }
+            let input = payload
+                .get("input")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            crate::plugin_bridge::execute_workflow(workflow_id, input, config)?
+        }
+        _ => {
+            return Err(WitPluginError::not_found(format!(
+                "Unknown mutation endpoint: '{}'. Available: workflows/execute, workflows/{{id}}/execute, worktrees/{{id}}/cleanup. Board mutations moved to plugin-board.",
+                endpoint
+            )));
+        }
+    };
+    serde_json::to_string_pretty(&result)
+        .map_err(|e| WitPluginError::internal(format!("JSON serialization error: {e}")))
 }
 
 #[cfg(test)]
@@ -873,6 +1116,25 @@ mod tests {
         let input = test_input("does-not-exist");
         let err = execute_action(&input).unwrap_err();
         assert_eq!(err.code, "not_found");
+    }
+
+    #[test]
+    fn run_tests_action_is_recognized() {
+        // The run-tests action delegates to plugin-test-runner via plugin_bridge.
+        // It will fail because no plugin server is running, but it should NOT
+        // return "Unknown action" (not_found with that message).
+        let input = test_input("run-tests");
+        let result = execute_action(&input);
+        match result {
+            Ok(_) => {} // If the bridge somehow succeeds, that's fine
+            Err(e) => {
+                assert!(
+                    !e.message.contains("Unknown action"),
+                    "run-tests should be a recognized action, got: {}",
+                    e.message
+                );
+            }
+        }
     }
 
     fn test_input_with_workspace(action: &str, workspace_dir: &str) -> CodingPackInput {
@@ -1206,6 +1468,10 @@ mod tests {
                 agent.get("tools").is_some(),
                 "agent {id} should have 'tools'"
             );
+            assert!(
+                agent.get("assigned_workflows").is_some(),
+                "agent {id} should have 'assigned_workflows'"
+            );
         }
     }
 
@@ -1242,6 +1508,215 @@ mod tests {
         );
     }
 
+    #[test]
+    fn list_agents_includes_assigned_workflows_count() {
+        let config = make_test_workspace_config();
+        let result = list_agents_value(&config).unwrap();
+        let arr = result.as_array().unwrap();
+
+        // Every agent should have the assigned_workflows field as a number
+        for agent in arr {
+            let id = agent["id"].as_str().unwrap_or("unknown");
+            assert!(
+                agent["assigned_workflows"].is_u64(),
+                "agent {id} should have numeric 'assigned_workflows'"
+            );
+        }
+
+        // bmad/architect and bmad/qa are referenced in many workflows,
+        // so they must have non-zero counts
+        let architect = arr
+            .iter()
+            .find(|a| a["id"].as_str() == Some("bmad/architect"))
+            .expect("should find bmad/architect");
+        assert!(
+            architect["assigned_workflows"].as_u64().unwrap() > 0,
+            "bmad/architect should be assigned to at least one workflow"
+        );
+
+        let qa = arr
+            .iter()
+            .find(|a| a["id"].as_str() == Some("bmad/qa"))
+            .expect("should find bmad/qa");
+        assert!(
+            qa["assigned_workflows"].as_u64().unwrap() > 0,
+            "bmad/qa should be assigned to at least one workflow"
+        );
+
+        // At least some agents should have non-zero counts overall
+        let total: u64 = arr
+            .iter()
+            .filter_map(|a| a["assigned_workflows"].as_u64())
+            .sum();
+        assert!(
+            total > 0,
+            "at least some agents should have non-zero assigned_workflows"
+        );
+    }
+
+    #[test]
+    fn list_agents_assigned_workflows_zero_when_no_workflows_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+
+        // Set up manifest but no workflows directory
+        let bmad_config = tmp.path().join("_bmad/_config");
+        std::fs::create_dir_all(&bmad_config).unwrap();
+        std::fs::copy(
+            base.join("_bmad/_config/agent-manifest.csv"),
+            bmad_config.join("agent-manifest.csv"),
+        )
+        .unwrap();
+
+        let config = WorkspaceConfig::from_base_dir(tmp.path());
+        let result = list_agents_value(&config).unwrap();
+        let arr = result.as_array().unwrap();
+
+        // All agents should have assigned_workflows = 0
+        for agent in arr {
+            let id = agent["id"].as_str().unwrap_or("unknown");
+            assert_eq!(
+                agent["assigned_workflows"].as_u64().unwrap(),
+                0,
+                "agent {id} should have 0 assigned_workflows when no workflows dir exists"
+            );
+        }
+    }
+
+    // ── Execution history integration tests ────────────────────────────
+
+    #[test]
+    fn list_workflows_detail_includes_execution_history_fields() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create a workflow file
+        let workflows_dir = tmp.path().join("config/workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(
+            workflows_dir.join("test-wf.yaml"),
+            "name: test-wf\ndescription: A test workflow\nsteps:\n  - id: step1\n    plugin: test\n",
+        )
+        .unwrap();
+
+        let config = WorkspaceConfig::from_base_dir(tmp.path());
+        let result = list_workflows_detail_value(&config).unwrap();
+        let arr = result.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+
+        let wf = &arr[0];
+        assert_eq!(wf["id"].as_str(), Some("test-wf"));
+        // Execution history fields should be present with defaults
+        assert!(wf.get("last_run").is_some(), "should have last_run field");
+        assert!(wf["last_run"].is_null(), "last_run should be null when never run");
+        assert_eq!(wf["total_runs"].as_u64(), Some(0));
+        assert_eq!(wf["success_rate"].as_str(), Some("0%"));
+    }
+
+    #[test]
+    fn list_workflows_detail_shows_stats_from_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows_dir = tmp.path().join("config/workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(
+            workflows_dir.join("my-wf.yaml"),
+            "name: my-wf\ndescription: My workflow\nsteps:\n  - id: s1\n    plugin: p\n",
+        )
+        .unwrap();
+
+        let config = WorkspaceConfig::from_base_dir(tmp.path());
+
+        // Write some execution history
+        let r1 = crate::execution_history::ExecutionRecord {
+            workflow_id: "my-wf".to_string(),
+            timestamp: "2026-03-31T10:00:00+00:00".to_string(),
+            success: true,
+        };
+        let r2 = crate::execution_history::ExecutionRecord {
+            workflow_id: "my-wf".to_string(),
+            timestamp: "2026-03-31T11:00:00+00:00".to_string(),
+            success: false,
+        };
+        crate::execution_history::save_execution_record(&config, &r1).unwrap();
+        crate::execution_history::save_execution_record(&config, &r2).unwrap();
+
+        let result = list_workflows_detail_value(&config).unwrap();
+        let arr = result.as_array().unwrap();
+        let wf = &arr[0];
+
+        assert_eq!(wf["total_runs"].as_u64(), Some(2));
+        assert_eq!(wf["success_rate"].as_str(), Some("50%"));
+        assert_eq!(
+            wf["last_run"].as_str(),
+            Some("2026-03-31T11:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn get_workflow_detail_includes_execution_history_and_recent_executions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows_dir = tmp.path().join("config/workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(
+            workflows_dir.join("detail-wf.yaml"),
+            "name: detail-wf\ndescription: Detail workflow\nsteps:\n  - id: s1\n    plugin: p\n",
+        )
+        .unwrap();
+
+        let config = WorkspaceConfig::from_base_dir(tmp.path());
+
+        // Add 3 execution records
+        for (i, success) in [(1, true), (2, false), (3, true)] {
+            let record = crate::execution_history::ExecutionRecord {
+                workflow_id: "detail-wf".to_string(),
+                timestamp: format!("2026-03-31T{:02}:00:00+00:00", 10 + i),
+                success,
+            };
+            crate::execution_history::save_execution_record(&config, &record).unwrap();
+        }
+
+        let result = get_workflow_detail_value("detail-wf", &config).unwrap();
+
+        assert_eq!(result["total_runs"].as_u64(), Some(3));
+        assert_eq!(result["success_rate"].as_str(), Some("66%"));
+        assert_eq!(
+            result["last_run"].as_str(),
+            Some("2026-03-31T13:00:00+00:00")
+        );
+
+        // recent_executions should be present and sorted most-recent-first
+        let recent = result["recent_executions"].as_array().unwrap();
+        assert_eq!(recent.len(), 3);
+        assert_eq!(
+            recent[0]["timestamp"].as_str(),
+            Some("2026-03-31T13:00:00+00:00")
+        );
+        assert_eq!(recent[0]["success"].as_bool(), Some(true));
+        assert_eq!(
+            recent[1]["timestamp"].as_str(),
+            Some("2026-03-31T12:00:00+00:00")
+        );
+        assert_eq!(recent[1]["success"].as_bool(), Some(false));
+    }
+
+    #[test]
+    fn get_workflow_detail_no_history_returns_defaults() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows_dir = tmp.path().join("config/workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(
+            workflows_dir.join("empty-wf.yaml"),
+            "name: empty-wf\ndescription: Empty\nsteps:\n  - id: s1\n    plugin: p\n",
+        )
+        .unwrap();
+
+        let config = WorkspaceConfig::from_base_dir(tmp.path());
+        let result = get_workflow_detail_value("empty-wf", &config).unwrap();
+
+        assert!(result["last_run"].is_null());
+        assert_eq!(result["total_runs"].as_u64(), Some(0));
+        assert_eq!(result["success_rate"].as_str(), Some("0%"));
+        assert_eq!(result["recent_executions"].as_array().unwrap().len(), 0);
+    }
+
     // ── Delegated action dispatch tests ───────────────────────────────
     // These verify the action is recognized (dispatched to plugin_bridge)
     // even though the actual plugin call will fail without a running server.
@@ -1255,5 +1730,336 @@ mod tests {
             err.code, "invalid_input",
             "build-fix-context should be recognized and require pr_number"
         );
+    }
+
+    // ── Phase 1: Dashboard endpoint gap fixes ────────────────────────
+
+    #[test]
+    fn data_mutate_workflows_execute_requires_workflow_id() {
+        let mut input = test_input("data-mutate");
+        input.endpoint = Some("workflows/execute".to_string());
+        input.payload = Some(serde_json::json!({}));
+        let err = execute_action(&input).unwrap_err();
+        assert_eq!(
+            err.code, "invalid_input",
+            "workflows/execute should require workflow_id in payload"
+        );
+    }
+
+    #[test]
+    fn data_mutate_workflows_id_execute_empty_id_rejected() {
+        let mut input = test_input("data-mutate");
+        input.endpoint = Some("workflows//execute".to_string());
+        input.payload = Some(serde_json::json!({}));
+        let err = execute_action(&input).unwrap_err();
+        assert_eq!(
+            err.code, "invalid_input",
+            "workflows//execute should reject empty workflow ID"
+        );
+    }
+
+    #[test]
+    fn data_mutate_unknown_endpoint_returns_not_found() {
+        let mut input = test_input("data-mutate");
+        input.endpoint = Some("unknown/endpoint".to_string());
+        input.payload = Some(serde_json::json!({}));
+        let err = execute_action(&input).unwrap_err();
+        assert_eq!(err.code, "not_found");
+    }
+
+    #[test]
+    fn data_query_agent_detail_found() {
+        let config = make_test_workspace_config();
+        let result = get_agent_detail_value("bmad/architect", &config).unwrap();
+        assert_eq!(result["id"].as_str(), Some("bmad/architect"));
+        assert_eq!(result["name"].as_str(), Some("Winston"));
+        assert!(result["role"].as_str().unwrap_or("").contains("Architect"));
+        assert!(result.get("model_tier").is_some());
+        assert!(result.get("skills").is_some());
+    }
+
+    #[test]
+    fn data_query_agent_detail_not_found() {
+        let config = make_test_workspace_config();
+        let err = get_agent_detail_value("nonexistent/agent", &config).unwrap_err();
+        assert_eq!(err.code, "not_found");
+    }
+
+    #[test]
+    fn data_query_agents_id_routed_correctly() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("agents/bmad/architect", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["id"].as_str(), Some("bmad/architect"));
+    }
+
+    #[test]
+    fn data_query_worktrees_id_routed_correctly() {
+        // worktrees/{id} should be recognized (delegates to plugin bridge,
+        // which will fail without a server, but the endpoint should be dispatched)
+        let config = make_test_workspace_config();
+        let result = execute_data_query("worktrees/some-task", &config, None, None);
+        // The call will fail because no server is running, but it should NOT
+        // return "Unknown data endpoint" (not_found with that message)
+        match result {
+            Ok(_) => {} // If the bridge somehow succeeds, that's fine
+            Err(e) => {
+                assert!(
+                    !e.message.contains("Unknown data endpoint"),
+                    "worktrees/some-task should be routed, not unknown: {}",
+                    e.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn data_mutate_worktrees_cleanup_routed_correctly() {
+        // worktrees/{id}/cleanup should be recognized as a mutation endpoint
+        let mut input = test_input("data-mutate");
+        input.endpoint = Some("worktrees/task-123/cleanup".to_string());
+        input.payload = Some(serde_json::json!({}));
+        let result = execute_action(&input);
+        match result {
+            Ok(_) => {} // Bridge succeeded somehow
+            Err(e) => {
+                assert!(
+                    !e.message.contains("Unknown mutation endpoint"),
+                    "worktrees/task-123/cleanup should be routed, not unknown: {}",
+                    e.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn data_mutate_workflows_id_execute_routed_correctly() {
+        // workflows/{id}/execute should be recognized as a mutation endpoint
+        let mut input = test_input("data-mutate");
+        input.endpoint = Some("workflows/coding-quick-dev/execute".to_string());
+        input.payload = Some(serde_json::json!({}));
+        let result = execute_action(&input);
+        match result {
+            Ok(_) => {} // Bridge succeeded somehow
+            Err(e) => {
+                assert!(
+                    !e.message.contains("Unknown mutation endpoint"),
+                    "workflows/coding-quick-dev/execute should be routed, not unknown: {}",
+                    e.message
+                );
+            }
+        }
+    }
+
+    // ── Data query routing tests (Phase 5b) ──────────────────────────
+
+    #[test]
+    fn data_query_status_returns_valid_json() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("status", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("validation").is_some(), "status should contain 'validation'");
+        assert!(parsed.get("workflows").is_some(), "status should contain 'workflows'");
+        assert!(parsed.get("plugins").is_some(), "status should contain 'plugins'");
+    }
+
+    #[test]
+    fn data_query_status_health_returns_badge_data() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("status/health", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("pack_status").is_some(), "health should contain 'pack_status'");
+        let status = parsed["pack_status"].as_str().unwrap();
+        assert!(
+            status == "healthy" || status == "degraded",
+            "pack_status should be 'healthy' or 'degraded', got: {status}"
+        );
+        assert!(parsed.get("plugins_ok").is_some(), "health should contain 'plugins_ok'");
+        assert!(parsed.get("workflows_found").is_some(), "health should contain 'workflows_found'");
+    }
+
+    #[test]
+    fn data_query_workflows_list_returns_array() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("workflows/list", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let arr = parsed.as_array().expect("workflows/list should return an array");
+        assert!(!arr.is_empty(), "should have at least one workflow");
+        let first = &arr[0];
+        assert!(first.get("id").is_some(), "workflow entry should have 'id'");
+        assert!(first.get("description").is_some(), "workflow entry should have 'description'");
+        assert!(first.get("category").is_some(), "workflow entry should have 'category'");
+        assert!(first.get("step_count").is_some(), "workflow entry should have 'step_count'");
+    }
+
+    #[test]
+    fn data_query_workflow_detail_coding_quick_dev() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("workflows/coding-quick-dev", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["id"].as_str(), Some("coding-quick-dev"));
+        assert_eq!(parsed["category"].as_str(), Some("coding"));
+        assert!(parsed["step_count"].as_u64().unwrap() > 0, "should have steps");
+        assert!(parsed.get("step_pipeline").is_some(), "should have step_pipeline");
+        assert!(parsed.get("description").is_some(), "should have description");
+    }
+
+    #[test]
+    fn data_query_workflow_detail_bootstrap_has_bootstrap_category() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("workflows/bootstrap-cycle", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["category"].as_str(), Some("bootstrap"));
+    }
+
+    #[test]
+    fn data_query_workflow_detail_nonexistent_returns_not_found() {
+        let config = make_test_workspace_config();
+        let err = execute_data_query("workflows/nonexistent-workflow", &config, None, None).unwrap_err();
+        assert_eq!(err.code, "not_found");
+    }
+
+    #[test]
+    fn data_query_agents_list_returns_array() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("agents/list", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let arr = parsed.as_array().expect("agents/list should return an array");
+        assert_eq!(arr.len(), 9, "should have 9 agents from registry");
+        let first = &arr[0];
+        assert!(first.get("id").is_some(), "agent should have 'id'");
+        assert!(first.get("name").is_some(), "agent should have 'name'");
+        assert!(first.get("role").is_some(), "agent should have 'role'");
+    }
+
+    #[test]
+    fn data_query_unknown_endpoint_returns_not_found() {
+        let config = make_test_workspace_config();
+        let err = execute_data_query("unknown-endpoint", &config, None, None).unwrap_err();
+        assert_eq!(err.code, "not_found");
+        assert!(
+            err.message.contains("Unknown data endpoint"),
+            "error should mention unknown endpoint, got: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn data_query_strips_leading_slash() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("/status/health", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("pack_status").is_some());
+    }
+
+    #[test]
+    fn data_query_board_summary_returns_fallback() {
+        let config = make_test_workspace_config();
+        let result = execute_data_query("board/summary", &config, None, None).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("sprint_progress").is_some(), "should have sprint_progress");
+        assert!(parsed.get("total").is_some(), "should have total");
+        assert!(parsed.get("done").is_some(), "should have done");
+        assert!(parsed.get("in_progress").is_some(), "should have in_progress");
+        assert!(parsed.get("ready").is_some(), "should have ready");
+    }
+
+    #[test]
+    fn data_mutate_board_proxied_to_plugin_board() {
+        // board/ mutations are now proxied to plugin-board (will fail without server)
+        let config = make_test_workspace_config();
+        let payload = serde_json::json!({"test": true});
+        let result = execute_data_mutate("board/sync", &payload, &config, None, None);
+        match result {
+            Ok(_) => {} // If board plugin is available, fine
+            Err(e) => {
+                // Should be a bridge error, not "Unknown mutation endpoint"
+                assert!(
+                    !e.message.contains("Unknown mutation endpoint"),
+                    "board/sync should be proxied to plugin-board, got: {}",
+                    e.message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn data_mutate_strips_leading_slash() {
+        let config = make_test_workspace_config();
+        let payload = serde_json::json!({});
+        let result = execute_data_mutate("/unknown/endpoint", &payload, &config, None, None);
+        match result {
+            Err(e) => assert_eq!(e.code, "not_found"),
+            Ok(_) => panic!("should return error for unknown mutation"),
+        }
+    }
+
+    #[test]
+    fn execute_action_data_query_routes_correctly() {
+        let config_base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let input = CodingPackInput {
+            action: "data-query".to_string(),
+            target: None,
+            workflow_id: None,
+            input: None,
+            endpoint: Some("status/health".to_string()),
+            payload: None,
+            workspace_dir: Some(config_base.to_string_lossy().to_string()),
+            workspace: None,
+            board_id: None,
+        };
+        let result = execute_action(&input).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("pack_status").is_some());
+    }
+
+    #[test]
+    fn execute_action_data_query_empty_endpoint_defaults_to_empty() {
+        let config_base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let input = CodingPackInput {
+            action: "data-query".to_string(),
+            target: None,
+            workflow_id: None,
+            input: None,
+            endpoint: None,
+            payload: None,
+            workspace_dir: Some(config_base.to_string_lossy().to_string()),
+            workspace: None,
+            board_id: None,
+        };
+        let err = execute_action(&input).unwrap_err();
+        assert_eq!(err.code, "not_found");
+    }
+
+    #[test]
+    fn status_action_returns_composite_data() {
+        let config_base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let input = test_input_with_workspace("status", config_base.to_str().unwrap());
+        let result = execute_action(&input).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert!(parsed.get("validation").is_some(), "status should include validation");
+        assert!(parsed.get("workflows").is_some(), "status should include workflows");
+        assert!(parsed.get("plugins").is_some(), "status should include plugins");
+    }
+
+    #[test]
+    fn task_workflow_context_fallback_returns_minimal_json() {
+        let config = make_test_workspace_config();
+        let result = task_workflow_context_value("nonexistent-task", &config).unwrap();
+        assert_eq!(result["task_id"].as_str(), Some("nonexistent-task"));
+        assert!(result["workflow_id"].is_null());
+        assert!(result["step_id"].is_null());
+        assert!(result["executor"].is_null());
+        assert!(result["model_tier"].is_null());
+    }
+
+    #[test]
+    fn task_agent_info_fallback_returns_default_agent() {
+        let config = make_test_workspace_config();
+        let result = task_agent_info_value("nonexistent-task", &config).unwrap();
+        assert_eq!(result["task_id"].as_str(), Some("nonexistent-task"));
+        assert_eq!(result["agent_name"].as_str(), Some("bmad-dev"));
+        assert_eq!(result["display_name"].as_str(), Some("Amelia"));
+        assert_eq!(result["title"].as_str(), Some("Developer"));
     }
 }

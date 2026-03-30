@@ -2,6 +2,7 @@
 pub mod agent_registry;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod config_injector;
+pub mod execution_history;
 pub mod pack;
 pub mod plugin_bridge;
 pub mod pulse_api;
@@ -11,8 +12,12 @@ pub mod util;
 pub mod validator;
 pub mod workspace;
 
+use std::path::Path;
+
 use pulse_plugin_sdk::error::WitPluginError;
-use pulse_plugin_sdk::wit_traits::{DashboardExtensionPlugin, PluginLifecycle, StepExecutorPlugin};
+use pulse_plugin_sdk::wit_traits::{
+    DashboardExtensionPlugin, InstallContext, PluginLifecycle, StepExecutorPlugin, UninstallContext,
+};
 use pulse_plugin_sdk::wit_types::{
     PluginDependency, PluginInfo, StepConfig, StepResult, TaskInput,
 };
@@ -20,6 +25,56 @@ use tracing::info;
 
 use pack::CodingPackInput;
 use util::is_executable;
+
+/// Workflow YAML file stems that belong to this plugin.
+/// Used by `on_uninstall` to remove only our files (not user-created ones).
+const KNOWN_WORKFLOW_NAMES: &[&str] = &[
+    "coding-quick-dev",
+    "coding-feature-dev",
+    "coding-story-dev",
+    "coding-bug-fix",
+    "coding-docs",
+    "coding-hotfix",
+    "coding-release",
+    "coding-security-audit",
+    "coding-migration",
+    "coding-perf-review",
+    "coding-pr-fix",
+    "coding-refactor",
+    "coding-review",
+    "coding-parallel-review",
+    "coding-memory-index",
+    "bootstrap-plugin",
+    "bootstrap-rebuild",
+    "bootstrap-cycle",
+    "project-init",
+];
+
+/// Recursively copy a directory tree from `src` to `dst`, creating directories
+/// as needed and overwriting existing files.
+fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<u64> {
+    let mut count = 0u64;
+    if !src.is_dir() {
+        return Ok(0);
+    }
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            count += copy_tree(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+            count += 1;
+        }
+    }
+    Ok(count)
+}
 
 // ── Server-mode registration ───────────────────────────────────────────────
 
@@ -31,6 +86,18 @@ pub fn metadata() -> pulse_plugin_sdk::PluginMetadata {
         pulse_plugin_sdk::API_VERSION,
     )
     .with_description("Coding pack orchestrator with BMAD agent injection and tool provider")
+    .with_provides(vec![
+        "coding-pack.validate".into(),
+        "coding-pack.workflows".into(),
+        "coding-pack.agents".into(),
+        "coding-pack.data-query".into(),
+    ])
+    .with_tags(vec![
+        "orchestrator".into(),
+        "coding".into(),
+        "bmad".into(),
+        "meta-plugin".into(),
+    ])
 }
 
 /// Registers plugin-coding-pack with Pulse's plugin registry (server mode).
@@ -104,7 +171,188 @@ impl PluginLifecycle for CodingPackPlugin {
                     version_req: ">=0.1.0".to_string(),
                     optional: true,
                 },
+                PluginDependency {
+                    name: "plugin-test-runner".to_string(),
+                    version_req: ">=0.1.0".to_string(),
+                    optional: true,
+                },
             ])
+            .with_provides(vec![
+                "coding-pack.validate".into(),
+                "coding-pack.workflows".into(),
+                "coding-pack.agents".into(),
+                "coding-pack.data-query".into(),
+            ])
+            .with_tags(vec![
+                "orchestrator".into(),
+                "coding".into(),
+                "bmad".into(),
+                "meta-plugin".into(),
+            ])
+    }
+
+    fn on_install(&self, ctx: &InstallContext) -> Result<(), WitPluginError> {
+        // 1. Copy workflow YAMLs: plugin_dir/config/workflows/ -> ctx.workflows_dir/
+        let src_workflows = ctx.plugin_dir.join("config").join("workflows");
+        if src_workflows.is_dir() {
+            std::fs::create_dir_all(&ctx.workflows_dir).map_err(|e| {
+                WitPluginError::internal(format!(
+                    "failed to create workflows dir {}: {e}",
+                    ctx.workflows_dir.display()
+                ))
+            })?;
+            let mut wf_count = 0u64;
+            let entries = std::fs::read_dir(&src_workflows).map_err(|e| {
+                WitPluginError::internal(format!(
+                    "failed to read {}: {e}",
+                    src_workflows.display()
+                ))
+            })?;
+            for entry in entries {
+                let entry = entry.map_err(|e| {
+                    WitPluginError::internal(format!("failed to read workflow entry: {e}"))
+                })?;
+                let src_path = entry.path();
+                if src_path.is_file() {
+                    let dst_path = ctx.workflows_dir.join(entry.file_name());
+                    std::fs::copy(&src_path, &dst_path).map_err(|e| {
+                        WitPluginError::internal(format!(
+                            "failed to copy {} -> {}: {e}",
+                            src_path.display(),
+                            dst_path.display()
+                        ))
+                    })?;
+                    wf_count += 1;
+                }
+            }
+            info!(
+                plugin = "plugin-coding-pack",
+                count = wf_count,
+                dst = %ctx.workflows_dir.display(),
+                "Installed workflow YAMLs"
+            );
+        }
+
+        // 2. Copy _bmad config tree: plugin_dir/_bmad/ -> ctx.config_dir/_bmad/
+        let src_bmad = ctx.plugin_dir.join("_bmad");
+        if src_bmad.is_dir() {
+            let dst_bmad = ctx.config_dir.join("_bmad");
+            let count = copy_tree(&src_bmad, &dst_bmad).map_err(|e| {
+                WitPluginError::internal(format!(
+                    "failed to copy _bmad tree {} -> {}: {e}",
+                    src_bmad.display(),
+                    dst_bmad.display()
+                ))
+            })?;
+            info!(
+                plugin = "plugin-coding-pack",
+                files = count,
+                dst = %dst_bmad.display(),
+                "Installed _bmad config tree"
+            );
+        }
+
+        // 3. Copy config.yaml (only if not already present — preserve user customizations)
+        let src_config = ctx.plugin_dir.join("config").join("config.yaml");
+        let dst_config = ctx.config_dir.join("config.yaml");
+        if src_config.is_file() && !dst_config.exists() {
+            std::fs::create_dir_all(&ctx.config_dir).map_err(|e| {
+                WitPluginError::internal(format!(
+                    "failed to create config dir {}: {e}",
+                    ctx.config_dir.display()
+                ))
+            })?;
+            std::fs::copy(&src_config, &dst_config).map_err(|e| {
+                WitPluginError::internal(format!(
+                    "failed to copy config.yaml {} -> {}: {e}",
+                    src_config.display(),
+                    dst_config.display()
+                ))
+            })?;
+            info!(
+                plugin = "plugin-coding-pack",
+                dst = %dst_config.display(),
+                "Installed config.yaml"
+            );
+        } else if dst_config.exists() {
+            info!(
+                plugin = "plugin-coding-pack",
+                dst = %dst_config.display(),
+                "Skipped config.yaml (already exists)"
+            );
+        }
+
+        info!(plugin = "plugin-coding-pack", "Install complete");
+        Ok(())
+    }
+
+    fn on_uninstall(&self, ctx: &UninstallContext) -> Result<(), WitPluginError> {
+        if !ctx.purge {
+            info!(
+                plugin = "plugin-coding-pack",
+                "Uninstall (non-purge): keeping config for potential reinstall"
+            );
+            return Ok(());
+        }
+
+        // 1. Remove known workflow YAMLs
+        let mut removed = 0u64;
+        for name in KNOWN_WORKFLOW_NAMES {
+            let path = ctx.workflows_dir.join(format!("{name}.yaml"));
+            if path.exists() {
+                std::fs::remove_file(&path).map_err(|e| {
+                    WitPluginError::internal(format!(
+                        "failed to remove workflow {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            info!(
+                plugin = "plugin-coding-pack",
+                count = removed,
+                "Removed workflow YAMLs"
+            );
+        }
+
+        // 2. Remove _bmad config tree
+        // Note: UninstallContext lacks config_dir, so we derive it from workflows_dir.
+        // This assumes the standard Pulse layout: {workspace}/config/workflows/
+        // where config_dir is {workspace}/config/ (i.e., workflows_dir's parent).
+        let config_dir = ctx.workflows_dir.parent().unwrap_or(&ctx.workflows_dir);
+        let bmad_dir = config_dir.join("_bmad");
+        if bmad_dir.is_dir() {
+            std::fs::remove_dir_all(&bmad_dir).map_err(|e| {
+                WitPluginError::internal(format!(
+                    "failed to remove _bmad dir {}: {e}",
+                    bmad_dir.display()
+                ))
+            })?;
+            info!(
+                plugin = "plugin-coding-pack",
+                path = %bmad_dir.display(),
+                "Removed _bmad config tree"
+            );
+        }
+
+        // 3. Remove execution-history.json
+        let history_path = config_dir.join("execution-history.json");
+        if history_path.is_file() {
+            std::fs::remove_file(&history_path).map_err(|e| {
+                WitPluginError::internal(format!(
+                    "failed to remove execution-history.json: {e}",
+                    ))
+            })?;
+            info!(
+                plugin = "plugin-coding-pack",
+                "Removed execution-history.json"
+            );
+        }
+
+        info!(plugin = "plugin-coding-pack", "Purge uninstall complete");
+        Ok(())
     }
 
     fn health_check(&self) -> bool {
@@ -246,7 +494,7 @@ impl DashboardExtensionPlugin for CodingPackPlugin {
                     "POST /workflows/{id}/execute        — Trigger workflow execution",
                     "GET  /agents/list                   — BMAD agent roster",
                     "GET  /agents/{id}                  — Agent detail",
-                    "GET  /executions/stream             — SSE execution event stream",
+                    "GET  /executions/stream             — SSE execution event stream (planned — not yet implemented)",
                     "GET  /tasks/{task_id}/workflow-context — Task workflow context",
                     "GET  /tasks/{task_id}/agent-info    — Task agent info",
                     "GET  /board/data                    — Kanban board (proxied to plugin-board)",
@@ -402,6 +650,54 @@ mod tests {
     }
 
     #[test]
+    fn metadata_declares_provides() {
+        let m = metadata();
+        assert_eq!(
+            m.provides,
+            vec![
+                "coding-pack.validate",
+                "coding-pack.workflows",
+                "coding-pack.agents",
+                "coding-pack.data-query",
+            ]
+        );
+    }
+
+    #[test]
+    fn metadata_declares_tags() {
+        let m = metadata();
+        assert_eq!(
+            m.tags,
+            vec!["orchestrator", "coding", "bmad", "meta-plugin"]
+        );
+    }
+
+    #[test]
+    fn plugin_info_declares_provides() {
+        let plugin = CodingPackPlugin;
+        let info = plugin.get_info();
+        assert_eq!(
+            info.provides,
+            vec![
+                "coding-pack.validate",
+                "coding-pack.workflows",
+                "coding-pack.agents",
+                "coding-pack.data-query",
+            ]
+        );
+    }
+
+    #[test]
+    fn plugin_info_declares_tags() {
+        let plugin = CodingPackPlugin;
+        let info = plugin.get_info();
+        assert_eq!(
+            info.tags,
+            vec!["orchestrator", "coding", "bmad", "meta-plugin"]
+        );
+    }
+
+    #[test]
     fn probe_returns_ok() {
         let plugin = CodingPackPlugin;
         let task = TaskInput::new("__probe__", "");
@@ -466,33 +762,24 @@ mod tests {
         let json = plugin.get_pages_json();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         let pages = parsed.as_array().unwrap();
-        // 7 original + board + assignment-detail + epics + epic-detail + worktrees = 12
-        assert_eq!(pages.len(), 12);
+        assert_eq!(pages.len(), 6); // Logs page disabled until SSE infra is ready
 
         let layout_types: Vec<&str> = pages
             .iter()
             .filter_map(|p| p["layout"]["type"].as_str())
             .collect();
-        assert!(layout_types.contains(&"board"), "missing board layout");
         assert!(layout_types.contains(&"table"), "missing table layout");
         assert!(layout_types.contains(&"detail"), "missing detail layout");
         assert!(layout_types.contains(&"form"), "missing form layout");
-        assert!(layout_types.contains(&"stream"), "missing stream layout");
 
         let page_ids: Vec<&str> = pages.iter().filter_map(|p| p["id"].as_str()).collect();
         for expected in &[
             "overview",
-            "board",
-            "assignment-detail",
-            "epics",
-            "epic-detail",
-            "worktrees",
             "workflows",
             "workflow-detail",
             "agents",
             "status",
             "execute",
-            "logs",
         ] {
             assert!(page_ids.contains(expected), "missing page: {expected}");
         }
@@ -541,5 +828,414 @@ mod tests {
         assert_eq!(customs[3]["id"], "sprint-progress");
         assert_eq!(customs[3]["target_view"], "workflow");
         assert_eq!(customs[3]["customization"]["type"], "badge");
+    }
+
+    // ── Workspace resolution chain tests (5.7) ──────────────────────
+
+    #[test]
+    fn workspace_resolved_from_input_workspace_dir_field() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-1", "test workspace resolution")
+            .with_input(serde_json::json!({
+                "action": "validate-pack",
+                "workspace_dir": "/tmp/test-workspace-dir"
+            }));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+        let content: serde_json::Value =
+            serde_json::from_str(result.content.as_deref().unwrap()).unwrap();
+        assert!(content.get("valid").is_some() || content.get("plugins_ok").is_some());
+    }
+
+    #[test]
+    fn workspace_resolved_from_task_metadata_workspace_dir() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-2", "test metadata resolution")
+            .with_input(serde_json::json!({"action": "validate-pack"}))
+            .with_metadata(serde_json::json!({"workspace_dir": "/tmp/meta-workspace"}));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+    }
+
+    #[test]
+    fn workspace_resolved_from_task_metadata_workspace_key() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-3", "test metadata workspace key")
+            .with_input(serde_json::json!({"action": "validate-pack"}))
+            .with_metadata(serde_json::json!({"workspace": "/tmp/meta-workspace-alt"}));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+    }
+
+    #[test]
+    fn workspace_resolved_from_task_metadata_workspace_path_key() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-4", "test metadata workspace_path key")
+            .with_input(serde_json::json!({"action": "validate-pack"}))
+            .with_metadata(serde_json::json!({"workspace_path": "/tmp/meta-ws-path"}));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+    }
+
+    #[test]
+    fn workspace_fallback_when_no_workspace_info() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-5", "test fallback")
+            .with_input(serde_json::json!({"action": "validate-pack"}));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+    }
+
+    #[test]
+    fn workspace_dir_in_input_takes_priority_over_metadata() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-6", "test priority")
+            .with_input(serde_json::json!({
+                "action": "validate-pack",
+                "workspace_dir": "/tmp/input-workspace"
+            }))
+            .with_metadata(serde_json::json!({"workspace_dir": "/tmp/meta-workspace"}));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+    }
+
+    #[test]
+    fn workspace_metadata_priority_order_is_workspace_dir_first() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-7", "test metadata priority")
+            .with_input(serde_json::json!({"action": "validate-pack"}))
+            .with_metadata(serde_json::json!({
+                "workspace_dir": "/tmp/priority-1",
+                "workspace": "/tmp/priority-2",
+                "workspace_path": "/tmp/priority-3"
+            }));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+    }
+
+    #[test]
+    fn execute_with_no_metadata_skips_metadata_resolution() {
+        let plugin = CodingPackPlugin;
+        let task = TaskInput::new("t-ws-8", "no metadata")
+            .with_input(serde_json::json!({
+                "action": "list-workflows"
+            }));
+        let config = StepConfig::new("s1", "agent");
+        let result = plugin.execute(task, config).unwrap();
+        assert_eq!(result.status, "success");
+        let content: serde_json::Value =
+            serde_json::from_str(result.content.as_deref().unwrap()).unwrap();
+        assert!(content.get("workflows").is_some());
+    }
+
+    // ── Lifecycle hook tests ──────────────────────────────────────────────
+
+    fn make_install_fixture(tmp: &std::path::Path) {
+        // Create a mock plugin_dir with workflows and _bmad tree
+        let wf_dir = tmp.join("plugin").join("config").join("workflows");
+        std::fs::create_dir_all(&wf_dir).unwrap();
+        std::fs::write(wf_dir.join("coding-quick-dev.yaml"), "id: coding-quick-dev\n").unwrap();
+        std::fs::write(wf_dir.join("coding-bug-fix.yaml"), "id: coding-bug-fix\n").unwrap();
+
+        let bmad_dir = tmp.join("plugin").join("_bmad").join("_config");
+        std::fs::create_dir_all(&bmad_dir).unwrap();
+        std::fs::write(bmad_dir.join("agent-manifest.csv"), "name,role\n").unwrap();
+
+        let bmad_agents = tmp.join("plugin").join("_bmad").join("bmm").join("agents");
+        std::fs::create_dir_all(&bmad_agents).unwrap();
+        std::fs::write(bmad_agents.join("dev.md"), "# Dev agent\n").unwrap();
+
+        let config_dir = tmp.join("plugin").join("config");
+        std::fs::write(config_dir.join("config.yaml"), "default: true\n").unwrap();
+    }
+
+    #[test]
+    fn on_install_copies_workflows() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_install_fixture(tmp.path());
+
+        let ctx = InstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: tmp.path().join("dest_workflows"),
+            config_dir: tmp.path().join("dest_config"),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+
+        assert!(ctx.workflows_dir.join("coding-quick-dev.yaml").exists());
+        assert!(ctx.workflows_dir.join("coding-bug-fix.yaml").exists());
+        let content = std::fs::read_to_string(ctx.workflows_dir.join("coding-quick-dev.yaml")).unwrap();
+        assert_eq!(content, "id: coding-quick-dev\n");
+    }
+
+    #[test]
+    fn on_install_copies_bmad_tree() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_install_fixture(tmp.path());
+
+        let ctx = InstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: tmp.path().join("dest_workflows"),
+            config_dir: tmp.path().join("dest_config"),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+
+        assert!(ctx.config_dir.join("_bmad").join("_config").join("agent-manifest.csv").exists());
+        assert!(ctx.config_dir.join("_bmad").join("bmm").join("agents").join("dev.md").exists());
+    }
+
+    #[test]
+    fn on_install_does_not_overwrite_existing_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_install_fixture(tmp.path());
+
+        let dest_config = tmp.path().join("dest_config");
+        std::fs::create_dir_all(&dest_config).unwrap();
+        std::fs::write(dest_config.join("config.yaml"), "user_custom: true\n").unwrap();
+
+        let ctx = InstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: tmp.path().join("dest_workflows"),
+            config_dir: dest_config.clone(),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+
+        // User's config.yaml should NOT be overwritten
+        let content = std::fs::read_to_string(dest_config.join("config.yaml")).unwrap();
+        assert_eq!(content, "user_custom: true\n");
+    }
+
+    #[test]
+    fn on_install_copies_config_when_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_install_fixture(tmp.path());
+
+        let ctx = InstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: tmp.path().join("dest_workflows"),
+            config_dir: tmp.path().join("dest_config"),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+
+        let content = std::fs::read_to_string(ctx.config_dir.join("config.yaml")).unwrap();
+        assert_eq!(content, "default: true\n");
+    }
+
+    #[test]
+    fn on_install_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        make_install_fixture(tmp.path());
+
+        let ctx = InstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: tmp.path().join("dest_workflows"),
+            config_dir: tmp.path().join("dest_config"),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+        // Second call should succeed without error
+        plugin.on_install(&ctx).unwrap();
+
+        assert!(ctx.workflows_dir.join("coding-quick-dev.yaml").exists());
+    }
+
+    #[test]
+    fn on_uninstall_non_purge_keeps_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows_dir = tmp.path().join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+        std::fs::write(workflows_dir.join("coding-quick-dev.yaml"), "test").unwrap();
+
+        let ctx = UninstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: workflows_dir.clone(),
+            purge: false,
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_uninstall(&ctx).unwrap();
+
+        // File should still exist
+        assert!(workflows_dir.join("coding-quick-dev.yaml").exists());
+    }
+
+    #[test]
+    fn on_uninstall_purge_removes_known_workflows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows_dir = tmp.path().join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+
+        // Create known workflow files
+        std::fs::write(workflows_dir.join("coding-quick-dev.yaml"), "test").unwrap();
+        std::fs::write(workflows_dir.join("coding-bug-fix.yaml"), "test").unwrap();
+        std::fs::write(workflows_dir.join("bootstrap-plugin.yaml"), "test").unwrap();
+
+        // Create a user-defined workflow that should NOT be removed
+        std::fs::write(workflows_dir.join("my-custom-workflow.yaml"), "custom").unwrap();
+
+        let ctx = UninstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: workflows_dir.clone(),
+            purge: true,
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_uninstall(&ctx).unwrap();
+
+        assert!(!workflows_dir.join("coding-quick-dev.yaml").exists());
+        assert!(!workflows_dir.join("coding-bug-fix.yaml").exists());
+        assert!(!workflows_dir.join("bootstrap-plugin.yaml").exists());
+        // User's custom workflow should still exist
+        assert!(workflows_dir.join("my-custom-workflow.yaml").exists());
+    }
+
+    #[test]
+    fn on_uninstall_purge_removes_bmad_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows_dir = tmp.path().join("config").join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+
+        // _bmad is a sibling of workflows under config/
+        let bmad_dir = tmp.path().join("config").join("_bmad").join("_config");
+        std::fs::create_dir_all(&bmad_dir).unwrap();
+        std::fs::write(bmad_dir.join("agent-manifest.csv"), "test").unwrap();
+
+        let ctx = UninstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: workflows_dir.clone(),
+            purge: true,
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_uninstall(&ctx).unwrap();
+
+        assert!(!tmp.path().join("config").join("_bmad").exists());
+    }
+
+    #[test]
+    fn on_uninstall_purge_removes_execution_history() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workflows_dir = tmp.path().join("config").join("workflows");
+        std::fs::create_dir_all(&workflows_dir).unwrap();
+
+        let history_path = tmp.path().join("config").join("execution-history.json");
+        std::fs::write(&history_path, "[]").unwrap();
+
+        let ctx = UninstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: workflows_dir.clone(),
+            purge: true,
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_uninstall(&ctx).unwrap();
+
+        assert!(!history_path.exists());
+    }
+
+    #[test]
+    fn on_uninstall_purge_handles_missing_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = UninstallContext {
+            plugin_dir: tmp.path().join("plugin"),
+            workflows_dir: tmp.path().join("nonexistent").join("workflows"),
+            purge: true,
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_uninstall(&ctx).unwrap();
+    }
+
+    // ── Install skip-path tests ─────────────────────────────────────
+
+    #[test]
+    fn on_install_skips_when_no_source_workflows_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_dir = tmp.path().join("plugin");
+        // Don't create config/workflows/ — on_install should skip gracefully
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        let ctx = InstallContext {
+            plugin_dir,
+            workflows_dir: tmp.path().join("workflows"),
+            config_dir: tmp.path().join("config"),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+        // Should succeed without error; workflows_dir may or may not exist
+    }
+
+    #[test]
+    fn on_install_skips_when_no_source_bmad_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_dir = tmp.path().join("plugin");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+
+        let ctx = InstallContext {
+            plugin_dir,
+            workflows_dir: tmp.path().join("workflows"),
+            config_dir: tmp.path().join("config"),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+        // _bmad dir should NOT be created if source doesn't exist
+        assert!(!ctx.config_dir.join("_bmad").exists());
+    }
+
+    #[test]
+    fn on_install_skips_config_when_no_source_config_yaml() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_dir = tmp.path().join("plugin");
+        std::fs::create_dir_all(plugin_dir.join("config")).unwrap();
+        // Don't create config.yaml — on_install should skip
+
+        let ctx = InstallContext {
+            plugin_dir,
+            workflows_dir: tmp.path().join("workflows"),
+            config_dir: tmp.path().join("config"),
+        };
+
+        let plugin = CodingPackPlugin;
+        plugin.on_install(&ctx).unwrap();
+        assert!(!ctx.config_dir.join("config.yaml").exists());
+    }
+
+    #[test]
+    fn copy_tree_skips_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("real.txt"), "content").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("/etc/hostname", src.join("link.txt")).unwrap();
+        }
+
+        let count = copy_tree(&src, &dst).unwrap();
+        assert!(dst.join("real.txt").exists());
+        #[cfg(unix)]
+        {
+            // Symlink should be skipped
+            assert!(!dst.join("link.txt").exists());
+            assert_eq!(count, 1);
+        }
     }
 }

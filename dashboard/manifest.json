@@ -13,7 +13,7 @@
       "path": "/overview",
       "icon": "package",
       "nav_order": 0,
-      "description": "Pack health, active boards, worktrees, and AI agents at a glance",
+      "description": "Pack health, workflows, plugins, and AI agents at a glance",
       "layout": {
         "type": "detail",
         "sections": [
@@ -24,16 +24,6 @@
               { "key": "valid", "label": "Valid" },
               { "key": "plugins_ok", "label": "Plugins OK" },
               { "key": "workflows_found", "label": "Workflows Found" }
-            ]
-          },
-          {
-            "id": "sprint",
-            "title": "Sprint Progress",
-            "fields": [
-              { "key": "sprint_progress", "label": "Status" },
-              { "key": "in_progress", "label": "In Progress" },
-              { "key": "done", "label": "Done" },
-              { "key": "total", "label": "Total" }
             ]
           },
           {
@@ -57,193 +47,11 @@
       }
     },
     {
-      "id": "board",
-      "title": "Task Board",
-      "path": "/board",
-      "icon": "kanban-square",
-      "nav_order": 1,
-      "description": "Kanban board — tasks linked to git repos, issues, PRs, and worktrees",
-      "layout": {
-        "type": "board",
-        "data_endpoint": "board/data",
-        "boards_endpoint": "board/boards/list",
-        "columns": [
-          { "id": "backlog", "label": "Backlog", "color": "#64748b" },
-          { "id": "ready-for-dev", "label": "Ready", "color": "#3b82f6" },
-          { "id": "in-progress", "label": "In Progress", "color": "#f59e0b" },
-          { "id": "review", "label": "Review", "color": "#8b5cf6" },
-          { "id": "done", "label": "Done", "color": "#10b981" }
-        ],
-        "card_fields": [
-          "id", "title", "status", "epic_title", "story_number",
-          "worktree_branch", "git_status", "issue_ref", "pr_ref"
-        ],
-        "swimlane_key": "epic_id",
-        "status_field": "status",
-        "card_detail_endpoint": "board/assignments/{id}"
-      }
-    },
-    {
-      "id": "assignment-detail",
-      "title": "Assignment Detail",
-      "path": "/board/assignments/:id",
-      "icon": "clipboard-list",
-      "nav_order": 99,
-      "description": "Assignment with tasks checklist, git context, and comments",
-      "layout": {
-        "type": "detail",
-        "sections": [
-          {
-            "id": "info",
-            "title": "Assignment",
-            "fields": [
-              { "key": "id", "label": "ID" },
-              { "key": "title", "label": "Title" },
-              { "key": "status", "label": "Status" },
-              { "key": "assignee", "label": "Assignee" },
-              { "key": "priority", "label": "Priority" },
-              { "key": "labels", "label": "Labels" },
-              { "key": "description", "label": "Description" }
-            ]
-          },
-          {
-            "id": "git",
-            "title": "Git Context",
-            "fields": [
-              { "key": "worktree_branch", "label": "Branch" },
-              { "key": "worktree_path", "label": "Worktree Path" },
-              { "key": "git_status", "label": "Working Tree" },
-              { "key": "issue_ref", "label": "Issue" },
-              { "key": "pr_ref", "label": "Pull Request" }
-            ]
-          },
-          {
-            "id": "tasks",
-            "title": "Tasks",
-            "fields": [
-              { "key": "task_progress", "label": "Progress" },
-              { "key": "tasks", "label": "Checklist" }
-            ]
-          },
-          {
-            "id": "comments",
-            "title": "Comments",
-            "fields": [
-              { "key": "comments", "label": "Thread" }
-            ]
-          }
-        ],
-        "data_endpoint": "board/assignments/{id}"
-      }
-    },
-    {
-      "id": "epics",
-      "title": "Epics",
-      "path": "/epics",
-      "icon": "layers",
-      "nav_order": 2,
-      "description": "All epics with stories and progress",
-      "layout": {
-        "type": "table",
-        "columns": [
-          { "key": "id", "label": "Epic", "sortable": true },
-          { "key": "title", "label": "Title", "sortable": true },
-          { "key": "status", "label": "Status", "sortable": true },
-          { "key": "phase_label", "label": "Phase", "sortable": true },
-          { "key": "progress", "label": "Progress", "sortable": false },
-          { "key": "story_count", "label": "Stories", "sortable": true },
-          { "key": "description", "label": "Description", "sortable": false }
-        ],
-        "data_endpoint": "board/epics/list",
-        "row_actions": [
-          {
-            "id": "view",
-            "label": "View Stories",
-            "method": "GET",
-            "endpoint": "board/epics/{id}"
-          }
-        ],
-        "bulk_actions": []
-      }
-    },
-    {
-      "id": "epic-detail",
-      "title": "Epic Detail",
-      "path": "/board/epics/:id",
-      "icon": "layers",
-      "nav_order": 99,
-      "description": "Epic details with stories and tasks",
-      "layout": {
-        "type": "detail",
-        "sections": [
-          {
-            "id": "info",
-            "title": "Epic Info",
-            "fields": [
-              { "key": "id", "label": "Epic ID" },
-              { "key": "title", "label": "Title" },
-              { "key": "status", "label": "Status" },
-              { "key": "phase_label", "label": "Phase" },
-              { "key": "progress", "label": "Progress" },
-              { "key": "description", "label": "Description" }
-            ]
-          },
-          {
-            "id": "stories",
-            "title": "Stories",
-            "fields": [
-              { "key": "story_count", "label": "Total Stories" },
-              { "key": "stories_done", "label": "Completed" },
-              { "key": "stories_in_progress", "label": "In Progress" },
-              { "key": "story_list", "label": "Story Breakdown" }
-            ]
-          }
-        ],
-        "data_endpoint": "board/epics/{id}"
-      }
-    },
-    {
-      "id": "worktrees",
-      "title": "Worktrees",
-      "path": "/worktrees",
-      "icon": "git-branch",
-      "nav_order": 3,
-      "description": "Active git worktrees — one per in-progress task",
-      "layout": {
-        "type": "table",
-        "columns": [
-          { "key": "task_id", "label": "Task", "sortable": true },
-          { "key": "story_title", "label": "Story", "sortable": false },
-          { "key": "branch", "label": "Branch", "sortable": true },
-          { "key": "worktree_path", "label": "Path", "sortable": false },
-          { "key": "git_status", "label": "Working Tree", "sortable": true },
-          { "key": "issue_ref", "label": "Issue", "sortable": false },
-          { "key": "pr_ref", "label": "PR", "sortable": false }
-        ],
-        "data_endpoint": "worktrees/list",
-        "row_actions": [
-          {
-            "id": "status",
-            "label": "Git Status",
-            "method": "GET",
-            "endpoint": "worktrees/{id}"
-          },
-          {
-            "id": "cleanup",
-            "label": "Cleanup",
-            "method": "POST",
-            "endpoint": "worktrees/{id}/cleanup"
-          }
-        ],
-        "bulk_actions": []
-      }
-    },
-    {
       "id": "workflows",
       "title": "Workflows",
       "path": "/workflows",
       "icon": "git-branch",
-      "nav_order": 4,
+      "nav_order": 3,
       "description": "Browse and manage all coding and bootstrap workflows",
       "layout": {
         "type": "table",
@@ -320,7 +128,7 @@
       "title": "AI Agents",
       "path": "/agents",
       "icon": "bot",
-      "nav_order": 5,
+      "nav_order": 4,
       "description": "BMAD AI team members and their roles",
       "layout": {
         "type": "table",
@@ -347,7 +155,7 @@
       "title": "Pack Status",
       "path": "/status",
       "icon": "activity",
-      "nav_order": 6,
+      "nav_order": 5,
       "description": "Pack health, validation results, and plugin status",
       "layout": {
         "type": "detail",
@@ -386,7 +194,7 @@
       "title": "Execute Workflow",
       "path": "/execute",
       "icon": "play",
-      "nav_order": 7,
+      "nav_order": 6,
       "description": "Trigger a workflow execution",
       "layout": {
         "type": "form",
@@ -403,6 +211,16 @@
                   "coding-bug-fix",
                   "coding-refactor",
                   "coding-review",
+                  "coding-parallel-review",
+                  "coding-pr-fix",
+                  "coding-memory-index",
+                  "coding-docs",
+                  "coding-hotfix",
+                  "coding-release",
+                  "coding-security-audit",
+                  "coding-migration",
+                  "coding-perf-review",
+                  "project-init",
                   "bootstrap-plugin",
                   "bootstrap-rebuild",
                   "bootstrap-cycle"
@@ -425,25 +243,6 @@
           }
         ],
         "submit_endpoint": "workflows/execute"
-      }
-    },
-    {
-      "id": "logs",
-      "title": "Execution Logs",
-      "path": "/logs",
-      "icon": "terminal",
-      "nav_order": 8,
-      "description": "Real-time execution event stream",
-      "layout": {
-        "type": "stream",
-        "event_endpoint": "executions/stream",
-        "event_types": [
-          "execution_start",
-          "step_start",
-          "step_complete",
-          "step_error",
-          "execution_complete"
-        ]
       }
     }
   ]

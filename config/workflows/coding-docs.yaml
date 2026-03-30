@@ -1,0 +1,63 @@
+name: coding-docs
+version: 1
+description: "Documentation generation: analyst scans for gaps -> tech-writer generates docs -> dev verifies accuracy"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+steps:
+  # Step 1: Analyst scans codebase for undocumented modules and changed APIs
+  - id: analyze
+    type: agent
+    depends_on: []
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/analyst. Scan the codebase for documentation gaps:
+        - Undocumented public modules, functions, and types
+        - Changed APIs that have stale or missing docs
+        - Missing README sections or architecture docs
+        - Inconsistent or outdated code comments
+        Produce a prioritized list of documentation needs with file paths and descriptions.
+      user_prompt_template: "Scan for documentation gaps: {{input}}"
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 2: Tech writer generates/updates documentation
+  - id: write_docs
+    type: agent
+    depends_on: [analyze]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/tech-writer. Generate or update documentation based on the analysis:
+        - Write clear, audience-appropriate documentation
+        - Use Mermaid diagrams for architecture and data flow where helpful
+        - Follow documentation standards and consistent formatting
+        - Include code examples for API documentation
+        - Keep documentation concise and task-oriented
+      user_prompt_template: "Generate documentation for identified gaps"
+      max_tokens: 8192
+      context_from: [analyze]
+      timeout_seconds: 600
+
+  # Step 3: Dev verifies technical accuracy
+  - id: review
+    type: agent
+    depends_on: [write_docs]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/dev. Review the generated documentation for technical accuracy:
+        - Verify code examples compile and are correct
+        - Check that API signatures match the actual code
+        - Confirm architectural diagrams reflect current implementation
+        - Flag any misleading or incorrect statements
+        End your review with a verdict line in exactly this format:
+        verdict: approve OR verdict: request-changes OR verdict: reject
+      user_prompt_template: "Review documentation for technical accuracy"
+      max_tokens: 4096
+      context_from: [write_docs]
+      timeout_seconds: 300

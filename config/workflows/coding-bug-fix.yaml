@@ -5,6 +5,7 @@ requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
   - plugin: plugin-git-ops
+  - plugin: plugin-test-runner
   - plugin: plugin-memory
     optional: true
 steps:
@@ -58,8 +59,9 @@ steps:
   - id: run_tests
     type: function
     depends_on: [implement_fix]
+    executor: plugin-test-runner
     config:
-      command: ["bash", "-c", "cargo test 2>&1 || npm test 2>&1 || echo 'no test runner found'"]
+      action: validate
       timeout_seconds: 120
 
   # Step 3: QA edge case review

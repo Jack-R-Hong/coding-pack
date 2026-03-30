@@ -1,0 +1,66 @@
+name: coding-security-audit
+version: 1
+description: "Security audit: dependency scan -> OWASP code audit -> security report"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+steps:
+  # Step 1: Scan dependencies for known vulnerabilities
+  - id: dependency_scan
+    type: agent
+    depends_on: []
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are a senior developer performing a dependency security scan.
+        Check all project dependencies for known vulnerabilities:
+        - Run cargo audit (Rust) or npm audit (Node.js) if available
+        - Review dependency versions against known CVE databases
+        - Flag outdated dependencies with known security issues
+        - Identify transitive dependencies with vulnerabilities
+        Produce a structured report of findings with severity levels.
+      user_prompt_template: "Scan dependencies for vulnerabilities: {{input}}"
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 2: Code audit for OWASP top 10 and common vulnerabilities
+  - id: code_audit
+    type: agent
+    depends_on: [dependency_scan]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/architect. Perform a security-focused code audit:
+        - OWASP Top 10 vulnerabilities (injection, broken auth, XSS, etc.)
+        - Hardcoded secrets, API keys, or credentials
+        - Insecure deserialization and input validation gaps
+        - Improper error handling that leaks sensitive information
+        - Authentication and authorization flaws
+        - Insecure cryptographic practices
+        Review each finding with severity (critical/high/medium/low) and remediation steps.
+      user_prompt_template: "Perform security code audit: {{input}}"
+      max_tokens: 4096
+      context_from: [dependency_scan]
+      timeout_seconds: 300
+
+  # Step 3: Generate security audit report
+  - id: report
+    type: agent
+    depends_on: [code_audit]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/tech-writer. Generate a comprehensive security audit report:
+        - Executive summary with overall risk assessment
+        - Findings table sorted by severity (critical -> low)
+        - Remediation recommendations with effort estimates
+        - Dependency vulnerability summary
+        - Compliance checklist (OWASP, CWE references)
+        Format as a clear, actionable document for both technical and non-technical stakeholders.
+      user_prompt_template: "Generate security audit report"
+      max_tokens: 4096
+      context_from: [dependency_scan, code_audit]
+      timeout_seconds: 300

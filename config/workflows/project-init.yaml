@@ -1,0 +1,68 @@
+name: project-init
+version: 1
+description: "Initialize new project: architect scaffolds structure -> SM sets up board -> QA validates"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+  - plugin: plugin-board
+    optional: true
+steps:
+  # Step 1: Architect scaffolds project structure
+  - id: scaffold
+    type: agent
+    depends_on: []
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/architect. Initialize a new project with coding-pack setup:
+        - Generate pulse.yaml with correct plugin references
+        - Create config directory structure (workflows, plugins, dashboards)
+        - Set up initial project scaffolding (src, tests, docs directories)
+        - Create .gitignore, README skeleton, and CI config stubs
+        - Configure bmad method integration (_bmad directory structure)
+        Ensure the project is immediately runnable with pulse after setup.
+      user_prompt_template: "Initialize new project: {{input}}"
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 2: Scrum Master creates initial board with epics and stories
+  - id: board_setup
+    type: agent
+    depends_on: [scaffold]
+    executor: bmad-method
+    optional: true
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/sm. Create an initial project board:
+        - Define initial epics based on the project scope
+        - Break epics into actionable user stories
+        - Set up sprint structure with prioritized backlog
+        - Add Definition of Done criteria for each story
+        - Create initial story point estimates
+      user_prompt_template: "Set up initial project board for: {{input}}"
+      max_tokens: 4096
+      context_from: [scaffold]
+      timeout_seconds: 300
+
+  # Step 3: QA validates project setup
+  - id: validate
+    type: agent
+    depends_on: [board_setup]
+    executor: bmad-method
+    config:
+      model_tier: fast
+      system_prompt: |
+        You are bmad/qa. Validate the project initialization:
+        - Verify pulse.yaml is valid and all plugin references resolve
+        - Check config directory structure is complete
+        - Validate workflow files are syntactically correct
+        - Confirm project builds and basic health checks pass
+        - Verify board setup (if present) has well-formed stories
+        End your review with a verdict line in exactly this format:
+        verdict: approve OR verdict: request-changes OR verdict: reject
+      user_prompt_template: "Validate project initialization"
+      max_tokens: 2048
+      context_from: [scaffold, board_setup]
+      timeout_seconds: 180

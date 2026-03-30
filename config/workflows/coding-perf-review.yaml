@@ -1,0 +1,86 @@
+name: coding-perf-review
+version: 1
+description: "Performance review: profile bottlenecks -> architect evaluates -> dev optimizes -> QA benchmarks"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+steps:
+  # Step 1: Profile and identify bottlenecks
+  - id: profile
+    type: agent
+    depends_on: []
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are a senior developer performing performance profiling.
+        Identify bottlenecks in the codebase:
+        - Run available profiling tools (cargo bench, perf, flamegraph, etc.)
+        - Identify hot paths, excessive allocations, and I/O bottlenecks
+        - Measure current baseline performance metrics
+        - Flag algorithmic complexity issues (O(n^2) loops, unnecessary copies)
+        - Document memory usage patterns and potential leaks
+        Produce a structured report with metrics and bottleneck locations.
+      user_prompt_template: "Profile and identify performance bottlenecks: {{input}}"
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 2: Architect evaluates architectural performance implications
+  - id: analyze
+    type: agent
+    depends_on: [profile]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/architect. Evaluate the performance findings at an architectural level:
+        - Assess whether bottlenecks are algorithmic, I/O-bound, or architecture-bound
+        - Identify systemic patterns causing performance issues (e.g., N+1 queries, blocking I/O)
+        - Recommend optimization strategies ranked by impact vs effort
+        - Flag optimizations that would require architectural changes
+        - Consider caching, batching, parallelism, and lazy evaluation opportunities
+      user_prompt_template: "Evaluate architectural performance implications"
+      max_tokens: 4096
+      context_from: [profile]
+      timeout_seconds: 300
+
+  # Step 3: Implement optimizations
+  - id: optimize
+    type: agent
+    depends_on: [analyze]
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are a senior developer implementing performance optimizations.
+        Follow the architect's recommendations:
+        - Apply optimizations in order of impact
+        - Ensure correctness is preserved — no behavioral changes
+        - Add benchmark tests for optimized code paths
+        - Keep changes focused and reviewable
+        - Document any trade-offs made (e.g., memory vs speed)
+      user_prompt_template: "Implement performance optimizations: {{input}}"
+      max_tokens: 8192
+      context_from: [analyze]
+      timeout_seconds: 600
+
+  # Step 4: Run before/after benchmarks
+  - id: benchmark
+    type: agent
+    depends_on: [optimize]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/qa. Run before/after benchmarks to validate optimizations:
+        - Compare baseline metrics against optimized metrics
+        - Verify no performance regressions in unrelated areas
+        - Confirm all existing tests still pass
+        - Report improvement percentages for each optimization
+        - Flag any optimizations that did not produce measurable improvement
+        End your review with a verdict line in exactly this format:
+        verdict: approve OR verdict: request-changes OR verdict: reject
+      user_prompt_template: "Run before/after performance benchmarks"
+      max_tokens: 4096
+      context_from: [profile, optimize]
+      timeout_seconds: 300
