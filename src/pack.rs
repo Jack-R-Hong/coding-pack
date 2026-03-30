@@ -427,16 +427,18 @@ fn execute_data_query(
     endpoint: &str,
     config: &WorkspaceConfig,
     workspace: Option<&str>,
-    _board_id: Option<&str>,
+    board_id: Option<&str>,
 ) -> Result<String, WitPluginError> {
-    let _ = workspace;
     let endpoint = endpoint.trim_start_matches('/');
     let result = match endpoint {
         "status" => pack_status_value(config)?,
         "status/health" => status_health_value(config)?,
         "workflows/list" => list_workflows_detail_value(config)?,
         "agents/list" => list_agents_value(config)?,
+        // Local sprint badge — delegates to auto-loop for task counts
         "board/summary" => board_summary_value(config)?,
+        // Active worktrees list — delegates to plugin-workspace-tracker
+        "worktrees/list" => crate::plugin_bridge::worktrees_list(config)?,
         ep if ep.starts_with("tasks/") && ep.ends_with("/workflow-context") => {
             let task_id = ep
                 .strip_prefix("tasks/")
@@ -455,9 +457,13 @@ fn execute_data_query(
             let id = ep.strip_prefix("workflows/").unwrap_or("");
             get_workflow_detail_value(id, config)?
         }
+        // Board data queries — proxied to plugin-board
+        ep if ep.starts_with("board/") => {
+            crate::plugin_bridge::board_query(ep, workspace, board_id, config)?
+        }
         _ => {
             return Err(WitPluginError::not_found(format!(
-                "Unknown data endpoint: '{}'. Available: status, status/health, workflows/list, agents/list, workflows/{{id}}, tasks/{{id}}/workflow-context, tasks/{{id}}/agent-info, board/summary. Board endpoints moved to plugin-board.",
+                "Unknown data endpoint: '{}'. Available: status, status/health, workflows/list, agents/list, workflows/{{id}}, tasks/{{id}}/workflow-context, tasks/{{id}}/agent-info, board/summary, board/data, board/boards/list, board/epics/list, board/filters, board/epics/{{id}}, board/stories/{{id}}, board/assignments/{{id}}, worktrees/list",
                 endpoint
             )));
         }
@@ -789,17 +795,22 @@ fn get_workflow_detail_value(
     }))
 }
 
-/// Handle data-mutate requests. Board mutations moved to plugin-board.
+/// Handle data-mutate requests. Board mutations are proxied to plugin-board.
 fn execute_data_mutate(
     endpoint: &str,
-    _payload: &serde_json::Value,
-    _config: &WorkspaceConfig,
-    _workspace: Option<&str>,
-    _board_id: Option<&str>,
+    payload: &serde_json::Value,
+    config: &WorkspaceConfig,
+    workspace: Option<&str>,
+    board_id: Option<&str>,
 ) -> Result<String, WitPluginError> {
     let endpoint = endpoint.trim_start_matches('/');
+    if endpoint.starts_with("board/") {
+        let result = crate::plugin_bridge::board_mutate(endpoint, payload, workspace, board_id, config)?;
+        return serde_json::to_string_pretty(&result)
+            .map_err(|e| WitPluginError::internal(format!("JSON serialization error: {e}")));
+    }
     Err(WitPluginError::not_found(format!(
-        "Unknown mutation endpoint: '{}'. Board mutations moved to plugin-board.",
+        "Unknown mutation endpoint: '{}'. Available: board/sync, board/status/{{id}}, board/epics, board/epics/{{id}}, board/stories, board/stories/{{id}}, board/assignments, board/assignments/{{id}}",
         endpoint
     )))
 }

@@ -1,0 +1,16 @@
+[
+  {
+    "id": "default",
+    "name": "Coding Pack Board",
+    "workspace": "Default",
+    "description": "Main development board for coding-pack plugin",
+    "is_active": true
+  },
+  {
+    "id": "sprint-2",
+    "name": "Sprint 2 — Board Integration",
+    "workspace": "Default",
+    "description": "Sprint 2 focus: plugin-board integration and worktrees dashboard",
+    "is_active": false
+  }
+]

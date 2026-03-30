@@ -5,3 +5,4 @@ plugin_formats: ["native"]
 workflows_path: "workflows"
 agents_path: "agents"
 policies_path: "policies"
+require_api_key: false

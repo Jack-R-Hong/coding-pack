@@ -237,30 +237,36 @@ impl DashboardExtensionPlugin for CodingPackPlugin {
         serde_json::json!([
             {
                 "prefix": "/api/v1/plugin-coding-pack",
-                "description": "Coding pack status, validation, and workflow management",
+                "description": "Coding pack status, validation, workflow management, board proxy, and worktrees",
                 "endpoints": [
-                    "GET  /status          — Pack health and validation",
-                    "GET  /status/health    — Health badge data",
-                    "GET  /workflows/list   — All workflows as table data",
-                    "GET  /workflows/{id}   — Workflow detail with steps",
-                    "POST /workflows/{id}/execute — Trigger workflow execution",
-                    "GET  /agents/list      — BMAD agent roster",
-                    "GET  /agents/{id}      — Agent detail",
-                    "GET  /executions/stream — SSE execution event stream",
+                    "GET  /status                        — Pack health and validation",
+                    "GET  /status/health                 — Health badge data",
+                    "GET  /workflows/list                — All workflows as table data",
+                    "GET  /workflows/{id}               — Workflow detail with steps",
+                    "POST /workflows/{id}/execute        — Trigger workflow execution",
+                    "GET  /agents/list                   — BMAD agent roster",
+                    "GET  /agents/{id}                  — Agent detail",
+                    "GET  /executions/stream             — SSE execution event stream",
                     "GET  /tasks/{task_id}/workflow-context — Task workflow context",
-                    "GET  /tasks/{task_id}/agent-info — Task agent info",
-                    "GET  /board/data       — Task board with all epics and stories",
-                    "GET  /board/epics/list  — All epics as table data",
-                    "GET  /board/filters    — Available filter options for board",
-                    "GET  /board/summary    — Compact sprint progress summary",
-                    "GET  /board/epics/{id} — Epic detail with stories",
-                    "GET  /board/stories/{id} — Story detail with acceptance criteria",
-                    "POST /board/sync           — Sync store from YAML/markdown artifacts",
-                    "PUT  /board/status/{id}    — Update item status (epic or story)",
-                    "POST /board/epics          — Create a new epic",
-                    "PUT  /board/epics/{id}     — Update an existing epic",
-                    "POST /board/stories        — Create a new story",
-                    "PUT  /board/stories/{id}   — Update an existing story"
+                    "GET  /tasks/{task_id}/agent-info    — Task agent info",
+                    "GET  /board/data                    — Kanban board (proxied to plugin-board)",
+                    "GET  /board/boards/list             — List boards per workspace (proxied)",
+                    "GET  /board/epics/list              — All epics as table data (proxied)",
+                    "GET  /board/filters                 — Available filter options (proxied)",
+                    "GET  /board/summary                 — Sprint progress badge (local)",
+                    "GET  /board/epics/{id}             — Epic detail with stories (proxied)",
+                    "GET  /board/stories/{id}           — Story detail (proxied)",
+                    "GET  /board/assignments/{id}       — Assignment detail (proxied)",
+                    "POST /board/sync                    — Sync board store (proxied)",
+                    "PUT  /board/status/{id}            — Update item status (proxied)",
+                    "POST /board/epics                   — Create epic (proxied)",
+                    "PUT  /board/epics/{id}             — Update epic (proxied)",
+                    "POST /board/stories                 — Create story (proxied)",
+                    "PUT  /board/stories/{id}           — Update story (proxied)",
+                    "POST /board/assignments             — Create assignment (proxied)",
+                    "PUT  /board/assignments/{id}       — Update assignment (proxied)",
+                    "GET  /worktrees/list                — Active worktrees with task and git context",
+                    "GET  /worktrees/{id}               — Worktree detail with git status"
                 ]
             }
         ])
@@ -460,12 +466,14 @@ mod tests {
         let json = plugin.get_pages_json();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         let pages = parsed.as_array().unwrap();
-        assert_eq!(pages.len(), 7); // Board pages moved to plugin-board
+        // 7 original + board + assignment-detail + epics + epic-detail + worktrees = 12
+        assert_eq!(pages.len(), 12);
 
         let layout_types: Vec<&str> = pages
             .iter()
             .filter_map(|p| p["layout"]["type"].as_str())
             .collect();
+        assert!(layout_types.contains(&"board"), "missing board layout");
         assert!(layout_types.contains(&"table"), "missing table layout");
         assert!(layout_types.contains(&"detail"), "missing detail layout");
         assert!(layout_types.contains(&"form"), "missing form layout");
@@ -474,6 +482,11 @@ mod tests {
         let page_ids: Vec<&str> = pages.iter().filter_map(|p| p["id"].as_str()).collect();
         for expected in &[
             "overview",
+            "board",
+            "assignment-detail",
+            "epics",
+            "epic-detail",
+            "worktrees",
             "workflows",
             "workflow-detail",
             "agents",
@@ -496,9 +509,9 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("plugin-coding-pack"));
-        // Verify endpoints are documented (10 original + 5 board GET + 6 board mutation)
+        // Verify endpoints are documented (10 core + 9 board GET proxied + 6 board mutation proxied + 2 worktrees)
         let endpoints = routes[0]["endpoints"].as_array().unwrap();
-        assert!(endpoints.len() >= 21);
+        assert!(endpoints.len() >= 27);
     }
 
     #[test]

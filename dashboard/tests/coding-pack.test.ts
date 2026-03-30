@@ -83,6 +83,60 @@ test.describe('Coding Pack — SDK Plugin Pages', () => {
     await expect(page.locator('h1')).toContainText('Coding Pack');
   });
 
+  // ── Board (kanban layout) ──
+
+  test('board page is in sidebar navigation', async ({ page }) => {
+    await goToPlugin(page, '/board');
+    const link = page.locator(`aside a[href="${PLUGIN_BASE}/board"]`).first();
+    await expect(link).toBeVisible({ timeout: 5000 });
+  });
+
+  // ── Epics (table layout) ──
+
+  test('epics page is in sidebar navigation', async ({ page }) => {
+    await goToPlugin(page, '/epics');
+    const link = page.locator(`aside a[href="${PLUGIN_BASE}/epics"]`).first();
+    await expect(link).toBeVisible({ timeout: 5000 });
+  });
+
+  test('epics page renders table', async ({ page }) => {
+    await goToPlugin(page, '/epics');
+    await expect(page.locator('table, [role="table"]')).toBeVisible({ timeout: 5000 });
+  });
+
+  test('epics table has expected columns', async ({ page }) => {
+    await goToPlugin(page, '/epics');
+    for (const col of ['Epic', 'Title', 'Status', 'Phase', 'Progress', 'Stories']) {
+      await expect(page.getByText(col).first()).toBeVisible({ timeout: 5000 });
+    }
+  });
+
+  // ── Worktrees (table layout) ──
+
+  test('worktrees page is in sidebar navigation', async ({ page }) => {
+    await goToPlugin(page, '/worktrees');
+    const link = page.locator(`aside a[href="${PLUGIN_BASE}/worktrees"]`).first();
+    await expect(link).toBeVisible({ timeout: 5000 });
+  });
+
+  test('worktrees page renders table or empty state', async ({ page }) => {
+    await goToPlugin(page, '/worktrees');
+    const main = page.locator('main');
+    const hasTable = await main.locator('table, [role="table"]').isVisible({ timeout: 5000 }).catch(() => false);
+    const hasEmpty = await main.getByText(/no worktrees|no active|empty/i).isVisible({ timeout: 5000 }).catch(() => false);
+    expect(hasTable || hasEmpty).toBeTruthy();
+  });
+
+  test('worktrees table has expected columns', async ({ page }) => {
+    await goToPlugin(page, '/worktrees');
+    const table = page.locator('table, [role="table"]');
+    if (await table.isVisible({ timeout: 5000 }).catch(() => false)) {
+      for (const col of ['Task', 'Branch', 'Path', 'Working Tree']) {
+        await expect(page.getByText(col).first()).toBeVisible({ timeout: 3000 });
+      }
+    }
+  });
+
   // ── Workflows (table layout) ──
 
   test('workflows page renders table', async ({ page }) => {

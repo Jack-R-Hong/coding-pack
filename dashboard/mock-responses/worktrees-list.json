@@ -1,0 +1,24 @@
+[
+  {
+    "id": "wt-story-2-1",
+    "task_id": "task-42",
+    "story_title": "Add board proxy endpoint to coding-pack",
+    "branch": "feat/story-2-1-board-proxy",
+    "worktree_path": "/home/jack/Document/pulse-plugins/worktree-feat-story-2-1",
+    "git_status": "dirty",
+    "changed_files_count": 4,
+    "issue_ref": "#67",
+    "pr_ref": null
+  },
+  {
+    "id": "wt-story-2-2",
+    "task_id": "task-43",
+    "story_title": "Add worktrees dashboard page",
+    "branch": "feat/story-2-2-worktrees-page",
+    "worktree_path": "/home/jack/Document/pulse-plugins/worktree-feat-story-2-2",
+    "git_status": "clean",
+    "changed_files_count": 0,
+    "issue_ref": "#68",
+    "pr_ref": "#89"
+  }
+]

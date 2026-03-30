@@ -1,6 +1,23 @@
 {
-  "phases": [],
-  "epics": [],
-  "statuses": [],
-  "types": []
+  "phases": [
+    { "value": "1", "label": "P1 — Plugin Infrastructure" },
+    { "value": "2", "label": "P2 — Board Integration" },
+    { "value": "3", "label": "P3 — Git & Issue Sync" }
+  ],
+  "epics": [
+    { "value": "epic-1", "label": "epic-1: Plugin Infrastructure" },
+    { "value": "epic-2", "label": "epic-2: Board Integration" },
+    { "value": "epic-3", "label": "epic-3: Git & Issue Sync" }
+  ],
+  "statuses": [
+    { "value": "backlog", "label": "Backlog" },
+    { "value": "ready-for-dev", "label": "Ready" },
+    { "value": "in-progress", "label": "In Progress" },
+    { "value": "review", "label": "Review" },
+    { "value": "done", "label": "Done" }
+  ],
+  "types": [
+    { "value": "epic", "label": "Epic" },
+    { "value": "story", "label": "Story" }
+  ]
 }

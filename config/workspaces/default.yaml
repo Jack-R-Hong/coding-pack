@@ -1,0 +1,12 @@
+name: default
+description: Default workspace
+enabled: true
+imports: []
+members:
+  workflows: []
+  agents: []
+  policies: []
+agent_overrides: {}
+plugins: {}
+communication: null
+mesh: null

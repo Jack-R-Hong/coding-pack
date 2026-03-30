@@ -208,6 +208,101 @@ pub fn recover_worktrees(config: &WorkspaceConfig) -> Result<serde_json::Value, 
     )
 }
 
+// ── plugin-board delegates ─────────────────────────────────────────────────
+
+/// Try SDK capability call first (POST payload via RPC), fall back to HTTP GET.
+/// Used for board data queries which are semantically GET operations.
+fn get_from_plugin(
+    capability: &str,
+    payload: serde_json::Value,
+    http_get_path: &str,
+) -> Result<serde_json::Value, WitPluginError> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if let Ok(result) = pulse_plugin_sdk::host::call_capability(capability, payload.clone()) {
+            return Ok(result);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let url = format!("{}/{}", api_base(), http_get_path);
+        let client = reqwest::blocking::Client::new();
+        let resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| bridge_err(format!("GET {url}: {e}")))?;
+        let body = resp
+            .text()
+            .map_err(|e| bridge_err(format!("read response: {e}")))?;
+        return serde_json::from_str(&body)
+            .map_err(|e| bridge_err(format!("parse response from {url}: {e}")));
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = (capability, payload, http_get_path);
+        Err(bridge_err("plugin bridge not available in WASM"))
+    }
+}
+
+/// Query board data from plugin-board.
+/// Proxies data-query requests via capability RPC (server mode) or HTTP GET (CLI mode).
+pub fn board_query(
+    endpoint: &str,
+    workspace: Option<&str>,
+    board_id: Option<&str>,
+    config: &WorkspaceConfig,
+) -> Result<serde_json::Value, WitPluginError> {
+    let payload = serde_json::json!({
+        "action": "data-query",
+        "endpoint": endpoint,
+        "workspace": workspace,
+        "board_id": board_id,
+        "workspace_dir": config.base_dir.to_string_lossy(),
+    });
+    get_from_plugin(
+        "board.query",
+        payload,
+        &format!("plugins/plugin-board/{}", endpoint),
+    )
+}
+
+/// Mutate board data in plugin-board.
+/// Proxies data-mutate requests via capability RPC (server mode) or HTTP POST (CLI mode).
+pub fn board_mutate(
+    endpoint: &str,
+    payload: &serde_json::Value,
+    workspace: Option<&str>,
+    board_id: Option<&str>,
+    config: &WorkspaceConfig,
+) -> Result<serde_json::Value, WitPluginError> {
+    let full_payload = serde_json::json!({
+        "action": "data-mutate",
+        "endpoint": endpoint,
+        "payload": payload,
+        "workspace": workspace,
+        "board_id": board_id,
+        "workspace_dir": config.base_dir.to_string_lossy(),
+    });
+    call_plugin(
+        "board.mutate",
+        full_payload,
+        "plugins/plugin-board/execute",
+    )
+}
+
+/// List active worktrees with task and git context.
+/// Delegates to plugin-workspace-tracker.
+pub fn worktrees_list(config: &WorkspaceConfig) -> Result<serde_json::Value, WitPluginError> {
+    let payload = config_payload(config);
+    call_plugin(
+        "workspace-tracker.list",
+        payload,
+        "plugins/plugin-workspace-tracker/worktrees/list",
+    )
+}
+
 // ── Pulse engine workflow execution ────────────────────────────────────────
 
 /// Execute a workflow by ID via the Pulse engine.
