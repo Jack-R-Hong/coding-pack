@@ -1,10 +1,11 @@
 name: coding-quick-dev
 version: 1
-description: "Quick development: rapid spec → implement → commit (minimal ceremony)"
+description: "Quick development: rapid spec → implement → test → commit (minimal ceremony)"
 requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
   - plugin: plugin-git-ops
+  - plugin: plugin-test-runner
 steps:
   # Step 1: Quick Flow Solo Dev creates lean spec
   - id: quick_spec
@@ -36,4 +37,14 @@ steps:
       max_tokens: 4096
       context_from: [quick_spec]
       timeout_seconds: 600
+
+  # Step 3: Run tests
+  - id: run_tests
+    type: function
+    depends_on: [implement]
+    executor: plugin-test-runner
+    config:
+      command: ["plugin-test-runner", "validate"]
+      action: validate
+      timeout_seconds: 120
 

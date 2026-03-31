@@ -20,6 +20,11 @@ pub fn hello() -> &'static str {
     "Hello from coding-pack"
 }
 
+/// Returns a personalised greeting for the given name.
+pub fn greet(name: &str) -> String {
+    format!("Hello, {name}! from coding-pack")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,6 +55,11 @@ mod tests {
     #[test]
     fn hello_returns_expected_greeting() {
         assert_eq!(hello(), "Hello from coding-pack");
+    }
+
+    #[test]
+    fn greet_returns_personalised_greeting() {
+        assert_eq!(greet("Alice"), "Hello, Alice! from coding-pack");
     }
 
     #[test]
