@@ -57,7 +57,7 @@ steps:
     executor: provider-claude-code
     config:
       mesh_enabled: true
-      agent_name: bmad/developer
+      agent_name: bmad/dev
       model_tier: balanced
       working_dir: "{{working_dir}}"
       system_prompt: |
