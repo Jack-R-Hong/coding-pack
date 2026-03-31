@@ -70,13 +70,25 @@ else:
         -H "Content-Type: application/json" \
         -d "{\"status\":\"in-progress\"}" > /dev/null 2>&1 || true
 
-    # Dispatch workflow
-    INPUT="$TASK_TITLE"
-    [ -n "$TASK_DESC" ] && INPUT="$TASK_TITLE\n\n$TASK_DESC"
+    # Capture pre-execution metrics baseline (completed count before dispatch)
+    _PRE_METRICS=$(curl -sf "$BASE_URL/api/v1/metrics" 2>/dev/null || true)
+    PRE_COMPLETED=$(echo "$_PRE_METRICS" | grep -m1 'pulse_tasks_total{.*state="completed"' | awk '{printf "%d\n", $NF}')
+    PRE_COMPLETED=${PRE_COMPLETED:-0}
+
+    # Dispatch workflow — use python to safely JSON-encode the input
+    PAYLOAD=$(python3 -c "
+import json, sys
+title = sys.argv[1]
+desc = sys.argv[2]
+workspace = sys.argv[3]
+task_id = sys.argv[4]
+inp = title if not desc else f'{title}\n\n{desc}'
+print(json.dumps({'input': inp, 'metadata': {'workspace_path': workspace, 'task_id': task_id}}))
+" "$TASK_TITLE" "$TASK_DESC" "$SCRIPT_DIR" "$TASK_ID")
 
     RESULT=$(curl -sf -X POST "$BASE_URL/api/v1/workflows/$WORKFLOW/execute" \
         -H "Content-Type: application/json" \
-        -d "{\"input\":\"$INPUT\",\"metadata\":{\"workspace_path\":\"$SCRIPT_DIR\",\"task_id\":\"$TASK_ID\"}}" 2>&1)
+        -d "$PAYLOAD" 2>&1)
 
     WF_TASK_ID=$(echo "$RESULT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('task_id',''))" 2>/dev/null)
 
@@ -92,6 +104,20 @@ else:
                 curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
                     -H "Content-Type: application/json" \
                     -d "{\"status\":\"done\"}" > /dev/null 2>&1 || true
+
+                # Fetch post-execution metrics and log summary
+                _POST_METRICS=$(curl -sf "$BASE_URL/api/v1/metrics" 2>/dev/null || true)
+                POST_COMPLETED=$(echo "$_POST_METRICS" | grep -m1 'pulse_tasks_total{.*state="completed"' | awk '{printf "%d\n", $NF}')
+                POST_FAILED=$(echo "$_POST_METRICS"    | grep -m1 'pulse_tasks_total{.*state="failed"'    | awk '{printf "%d\n", $NF}')
+                POST_TOKENS=$(echo "$_POST_METRICS"    | grep -m1 'pulse_tokens_total'                    | awk '{printf "%d\n", $NF}')
+                POST_COMPLETED=${POST_COMPLETED:-0}
+                POST_FAILED=${POST_FAILED:-0}
+                POST_TOKENS=${POST_TOKENS:-0}
+                echo "[auto-dev]   → Metrics: completed=$POST_COMPLETED, failed=$POST_FAILED, tokens=$POST_TOKENS"
+                if [ "$POST_COMPLETED" -le "$PRE_COMPLETED" ] 2>/dev/null; then
+                    echo "[auto-dev]   ⚠ Warning: completion metric did not increase"
+                fi
+
                 break
             elif [ "$STATE" = "Failed" ]; then
                 echo "[auto-dev]   → Failed after $((i*10))s"

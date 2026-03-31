@@ -4,6 +4,7 @@ use crate::validator;
 use crate::workspace::WorkspaceConfig;
 use pulse_plugin_sdk::error::WitPluginError;
 use serde::Deserialize;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 pub struct CodingPackInput {
@@ -34,6 +35,125 @@ pub struct CodingPackInput {
     /// Board ID for multi-board filtering within a workspace.
     #[serde(default)]
     pub board_id: Option<String>,
+}
+
+/// Runtime status of a single plugin binary.
+#[derive(Debug, Clone)]
+pub struct PluginStatus {
+    /// File name of the plugin binary (e.g. `"bmad-method"`).
+    pub name: String,
+    /// Absolute path to the binary.
+    pub path: PathBuf,
+    /// Whether the file exists on disk.
+    pub exists: bool,
+    /// Whether the file has executable permissions (Unix) or is a regular file (Windows).
+    pub executable: bool,
+    /// Whether the binary responded successfully to a JSON-RPC health probe.
+    pub healthy: bool,
+}
+
+/// Validate all plugin binaries found in `plugins_dir`.
+///
+/// Iterates every non-hidden entry in the directory and for each one checks
+/// whether the file exists, carries executable permissions, and responds to a
+/// `{"method":"health"}` JSON-RPC probe.  Returns one [`PluginStatus`] per
+/// discovered entry, sorted by name.  Returns an empty `Vec` when the
+/// directory does not exist or cannot be read.
+pub fn validate_plugins(plugins_dir: &Path) -> Vec<PluginStatus> {
+    let entries = match std::fs::read_dir(plugins_dir) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .map(|n| !n.starts_with('.'))
+                .unwrap_or(false)
+        })
+        .collect();
+    paths.sort();
+
+    paths
+        .into_iter()
+        .map(|path| {
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("")
+                .to_string();
+            let exists = path.exists();
+            let executable = exists && is_executable(&path);
+            let healthy = executable && probe_plugin_health(&path);
+            PluginStatus {
+                name,
+                path,
+                exists,
+                executable,
+                healthy,
+            }
+        })
+        .collect()
+}
+
+/// Spawn `path` as a subprocess, write a minimal JSON-RPC health request to
+/// its stdin, and return `true` iff it replies with a JSON object that
+/// contains a `"result"` key within three seconds.
+#[cfg(not(target_arch = "wasm32"))]
+fn probe_plugin_health(path: &Path) -> bool {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    use std::time::Duration;
+
+    let mut child = match Command::new(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+
+    // Send the health probe and close stdin.
+    if let Some(mut stdin) = child.stdin.take() {
+        let _ = stdin.write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"health\",\"params\":{}}\n");
+    }
+
+    // Read stdout on a background thread so we can apply a deadline.
+    let stdout = child.stdout.take();
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(mut out) = stdout {
+            use std::io::Read;
+            let _ = out.read_to_string(&mut buf);
+        }
+        let _ = tx.send(buf);
+    });
+
+    let output = match rx.recv_timeout(Duration::from_secs(3)) {
+        Ok(s) => s,
+        Err(_) => {
+            let _ = child.kill();
+            return false;
+        }
+    };
+    let _ = child.wait();
+
+    // A healthy plugin returns JSON with a top-level "result" field.
+    serde_json::from_str::<serde_json::Value>(&output)
+        .map(|v| v.get("result").is_some())
+        .unwrap_or(false)
+}
+
+/// WASM cannot spawn subprocesses; health is always reported as `false`.
+#[cfg(target_arch = "wasm32")]
+fn probe_plugin_health(_path: &Path) -> bool {
+    false
 }
 
 /// Execute a pack-level action.
