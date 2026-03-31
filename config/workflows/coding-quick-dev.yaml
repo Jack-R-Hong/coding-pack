@@ -48,3 +48,13 @@ steps:
       action: validate
       timeout_seconds: 120
 
+  # Step 4: Commit
+  - id: git_commit
+    type: function
+    depends_on: [run_tests]
+    executor: git-ops
+    config:
+      command: ["git-ops", "commit"]
+      operation: commit
+      message: "feat: auto-dev quick implementation"
+
