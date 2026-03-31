@@ -15,6 +15,11 @@ pub fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// Returns a greeting string identifying this plugin.
+pub fn hello() -> &'static str {
+    "Hello from coding-pack"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,6 +45,11 @@ mod tests {
         #[cfg(unix)]
         fs::set_permissions(&file_path, fs::Permissions::from_mode(0o644)).unwrap();
         assert!(!is_executable(&file_path));
+    }
+
+    #[test]
+    fn hello_returns_expected_greeting() {
+        assert_eq!(hello(), "Hello from coding-pack");
     }
 
     #[test]
