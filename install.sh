@@ -16,7 +16,18 @@ SIBLINGS_DIR="$(dirname "$PLUGIN_DIR")"
 DEST="$PLUGIN_DIR/config/plugins"
 
 # Sibling plugins to build
-SIBLINGS=(provider-claude-code git-ops git-worktree bmad-method plugin-board)
+SIBLINGS=(
+  provider-claude-code
+  git-ops
+  git-worktree
+  bmad-method
+  plugin-board
+  plugin-auto-loop
+  plugin-feedback-loop
+  plugin-issue-sync
+  plugin-test-runner
+  plugin-workspace-tracker
+)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -96,6 +107,11 @@ declare -A BIN_NAMES=(
   [git-worktree]="plugin-git-worktree"
   [bmad-method]="bmad-method"
   [plugin-board]="plugin-board"
+  [plugin-auto-loop]="plugin-auto-loop"
+  [plugin-feedback-loop]="plugin-feedback-loop"
+  [plugin-issue-sync]="plugin-issue-sync"
+  [plugin-test-runner]="plugin-test-runner"
+  [plugin-workspace-tracker]="plugin-workspace-tracker"
 )
 
 for name in "${SIBLINGS[@]}"; do
@@ -109,13 +125,14 @@ for name in "${SIBLINGS[@]}"; do
   fi
 done
 
-# plugin-memory (script, not a Rust binary)
-memory_src="$PLUGIN_DIR/config/plugins/plugin-memory"
-if [[ -f "$memory_src" ]]; then
-  ok "plugin-memory (already in place)"
-else
-  warn "plugin-memory not found"
-fi
+# Remove stale shell-script stubs that are not real plugin binaries
+for stub in plugin-memory plugin-git-pr; do
+  stub_path="$DEST/$stub"
+  if [[ -f "$stub_path" ]]; then
+    rm "$stub_path"
+    ok "removed stale stub: $stub"
+  fi
+done
 
 # Install workflows via pulse if available
 if command -v pulse &>/dev/null; then
@@ -130,7 +147,8 @@ fi
 header "Validation"
 
 missing=0
-for bin in plugin-coding-pack bmad-method provider-claude-code plugin-git-ops plugin-git-worktree plugin-board; do
+for bin in plugin-coding-pack bmad-method provider-claude-code plugin-git-ops plugin-git-worktree plugin-board \
+           plugin-auto-loop plugin-feedback-loop plugin-issue-sync plugin-test-runner plugin-workspace-tracker; do
   if [[ -f "$DEST/$bin" ]]; then
     ok "$bin"
   else
