@@ -5,6 +5,9 @@ Cargo.lock
 
 # Plugin binaries (rebuilt from source)
 config/plugins/
+# Shell stubs — not real plugin binaries
+config/plugins/plugin-memory
+config/plugins/plugin-git-pr
 
 # IDE / editor
 .idea/
