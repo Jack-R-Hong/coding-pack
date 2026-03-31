@@ -4,21 +4,12 @@ description: "Parallel code review: 3 specialized review agents run concurrently
 requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
-  - plugin: plugin-memory
 steps:
   # Step 0 (optional): Knowledge graph context
-  - id: memory_context
-    type: function
-    depends_on: []
-    executor: plugin-memory
-    config:
-      command: ["plugin-memory", "context", "{{input}}"]
-      timeout_seconds: 60
-
   # Step 1: Adversarial review (parallel)
   - id: adversarial_review
     type: agent
-    depends_on: [memory_context]
+    depends_on: []
     executor: bmad-method
     config:
       model_tier: balanced
@@ -39,7 +30,7 @@ steps:
   # Step 2: Edge case review (parallel with step 1)
   - id: edge_case_review
     type: agent
-    depends_on: [memory_context]
+    depends_on: []
     executor: bmad-method
     config:
       model_tier: balanced
@@ -60,7 +51,7 @@ steps:
   # Step 3: Security review (parallel with steps 1 & 2)
   - id: security_review
     type: agent
-    depends_on: [memory_context]
+    depends_on: []
     executor: bmad-method
     config:
       model_tier: balanced

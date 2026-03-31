@@ -5,21 +5,12 @@ requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
   - plugin: plugin-git-ops
-  - plugin: plugin-memory
 steps:
   # Step 0 (optional): Impact analysis via knowledge graph
-  - id: memory_impact
-    type: function
-    depends_on: []
-    executor: plugin-memory
-    config:
-      command: ["plugin-memory", "query", "{{input}}"]
-      timeout_seconds: 60
-
   # Step 1: Architect plans the refactor (with impact context)
   - id: plan_refactor
     type: agent
-    depends_on: [memory_impact]
+    depends_on: []
     executor: bmad-method
     config:
       model_tier: balanced
@@ -68,27 +59,12 @@ steps:
       timeout_seconds: 300
 
   # Step 4: Detect changes & risk assessment
-  - id: memory_detect_changes
-    type: function
-    depends_on: [regression_check]
-    executor: plugin-memory
-    config:
-      command: ["plugin-memory", "detect-changes"]
-      timeout_seconds: 60
-
   # Step 5: Commit
   - id: git_commit
     type: function
-    depends_on: [memory_detect_changes]
+    depends_on: []
     executor: git-ops
     config:
       command: ["bash", "-c", "git add -A && git commit -m \"refactor: {{input}}\""]
 
   # Step 6: Re-index after commit
-  - id: memory_reindex
-    type: function
-    depends_on: [git_commit]
-    executor: plugin-memory
-    config:
-      command: ["plugin-memory", "reindex", "."]
-      timeout_seconds: 120

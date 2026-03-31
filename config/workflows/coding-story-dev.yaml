@@ -7,21 +7,12 @@ requires:
   - plugin: plugin-git-ops
   - plugin: plugin-git-worktree
   - plugin: plugin-test-runner
-  - plugin: plugin-memory
 steps:
   # Step 0 (optional): Query knowledge graph for story context
-  - id: memory_context
-    type: function
-    depends_on: []
-    executor: plugin-memory
-    config:
-      command: ["plugin-memory", "query", "{{input}}"]
-      timeout_seconds: 60
-
   # Step 1: Scrum Master prepares the story
   - id: prepare_story
     type: agent
-    depends_on: [memory_context]
+    depends_on: []
     executor: bmad-method
     config:
       model_tier: balanced
@@ -112,32 +103,15 @@ steps:
       timeout_seconds: 300
 
   # Step 6: Detect changes & risk assessment (in worktree)
-  - id: memory_detect_changes
-    type: function
-    depends_on: [qa_review]
-    executor: plugin-memory
-    config:
-      working_dir: "{{working_dir}}"
-      command: ["plugin-memory", "detect-changes"]
-      timeout_seconds: 60
-
   # Step 7: Commit (in worktree)
   - id: git_commit
     type: function
-    depends_on: [memory_detect_changes]
+    depends_on: []
     config:
       working_dir: "{{working_dir}}"
       command: ["bash", "-c", "git add -A && git commit -m \"feat: {{input}}\""]
 
   # Step 8: Re-index after commit
-  - id: memory_reindex
-    type: function
-    depends_on: [git_commit]
-    executor: plugin-memory
-    config:
-      command: ["plugin-memory", "reindex", "."]
-      timeout_seconds: 120
-
   # Step 9: Push branch to remote
   - id: git_push
     type: function

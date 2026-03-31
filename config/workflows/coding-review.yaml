@@ -3,21 +3,11 @@ version: 1
 description: "Multi-layer code review: adversarial + edge-case analysis in parallel, then synthesis"
 requires:
   - plugin: bmad-method
-  - plugin: plugin-memory
 steps:
   # Step 0 (optional): Knowledge graph context for review
-  - id: memory_context
-    type: function
-    depends_on: []
-    executor: plugin-memory
-    config:
-      command: ["plugin-memory", "query", "{{input}}"]
-      timeout_seconds: 60
-
-  # Multi-agent code review session (replaces parallel review layers)
   - id: code_review_session
     type: session
-    depends_on: [memory_context]
+    depends_on: []
     config:
       participants:
         - agent: bmad/architect

@@ -1,13 +1,5 @@
 use std::path::Path;
 
-/// Returns the square of `n`.
-pub fn square<T>(n: T) -> T
-where
-    T: std::ops::Mul<Output = T> + Copy,
-{
-    n * n
-}
-
 /// Check whether a file at the given path has executable permissions.
 pub fn is_executable(path: &Path) -> bool {
     #[cfg(unix)]
@@ -29,19 +21,6 @@ mod tests {
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn square_integers() {
-        assert_eq!(square(0), 0);
-        assert_eq!(square(3), 9);
-        assert_eq!(square(-4), 16);
-        assert_eq!(square(10_i64), 100);
-    }
-
-    #[test]
-    fn square_floats() {
-        assert!((square(2.5_f64) - 6.25).abs() < f64::EPSILON);
-    }
 
     #[test]
     fn is_executable_returns_true_for_executable_file() {
