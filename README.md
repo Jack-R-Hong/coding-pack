@@ -145,6 +145,57 @@ pulse run bootstrap-cycle --config ./config \
   -i '{"input": "重構 pack.rs 的錯誤處理，改用 thiserror"}'
 ```
 
+## Auto-Dev（自動開發 Daemon）
+
+`auto-dev` 系統會持續監控 board 上 `ready-for-dev` 的任務，自動挑選並執行對應工作流，無需人工介入。
+
+### 1. 啟動 pulse-server
+
+```bash
+pulse-server --config ./config
+```
+
+### 2. 建立 Board 任務
+
+透過 API 新增一個待開發任務：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata": {
+      "title": "在 login endpoint 加上 input validation",
+      "description": "對 /api/login 的 email 與 password 欄位加上格式驗證，回傳統一的 400 錯誤格式",
+      "status": "ready-for-dev",
+      "labels": ["quick-dev"]
+    }
+  }'
+```
+
+> **labels** 決定使用哪個工作流：`quick-dev` → `coding-quick-dev`、`feature` → `coding-feature-dev`、`bug` → `coding-bug-fix`、`refactor` → `coding-refactor`。
+
+### 3. 啟動 Auto-Dev Daemon
+
+每 60 秒輪詢一次 board，自動執行可用任務：
+
+```bash
+./scripts/auto-dev-daemon.sh 60
+```
+
+Daemon 會將執行紀錄輸出至 stdout，並在任務完成後自動將狀態更新為 `done`。
+
+### 4. 手動觸發單次工作流
+
+不經由 daemon，直接對指定工作流發送執行請求：
+
+```bash
+curl -X POST http://localhost:8080/api/v1/workflows/coding-quick-dev/execute \
+  -H "Content-Type: application/json" \
+  -d '{"input": "在 login endpoint 加上 input validation"}'
+```
+
+---
+
 ## Plugin 管理指令
 
 透過 plugin 的 action API 查詢系統狀態：
