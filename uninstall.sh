@@ -23,7 +23,12 @@ PLUGIN_BINS=(
   provider-claude-code
   plugin-git-ops
   plugin-git-worktree
-  plugin-memory
+  plugin-board
+  plugin-auto-loop
+  plugin-feedback-loop
+  plugin-issue-sync
+  plugin-test-runner
+  plugin-workspace-tracker
 )
 
 # Workflow files owned by this pack
