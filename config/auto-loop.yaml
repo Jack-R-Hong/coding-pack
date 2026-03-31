@@ -1,23 +1,33 @@
 # Auto-Dev Loop Configuration
 # Maps task labels to workflow IDs for automatic routing.
-# When auto-dev picks a task, its labels determine which workflow runs.
-# Falls back to coding-quick-dev if no label matches.
-routing:
+plugin: plugin-auto-loop
+poll_interval_secs: 30
+max_tasks_per_cycle: 5
+skip_validation: false
+workspace_dir: "/home/jack/Document/pulse-plugins/coding-pack"
+
+rules:
   - label: "story"
-    workflow: "coding-story-dev"
+    workflow_id: "coding-story-dev"
+    priority: 10
   - label: "bug"
-    workflow: "coding-bug-fix"
+    workflow_id: "coding-bug-fix"
+    priority: 10
   - label: "refactor"
-    workflow: "coding-refactor"
+    workflow_id: "coding-refactor"
+    priority: 10
   - label: "quick"
-    workflow: "coding-quick-dev"
+    workflow_id: "coding-quick-dev"
+    priority: 20
   - label: "feature"
-    workflow: "coding-feature-dev"
+    workflow_id: "coding-feature-dev"
+    priority: 10
   - label: "review"
-    workflow: "coding-review"
+    workflow_id: "coding-review"
+    priority: 15
   - label: "pr-fix"
-    workflow: "coding-pr-fix"
-  - default: "coding-quick-dev"
-max_retries: 3
-validation_enabled: true
-poll_interval_secs: 300
+    workflow_id: "coding-pr-fix"
+    priority: 5
+  - label: "*"
+    workflow_id: "coding-quick-dev"
+    priority: 100
