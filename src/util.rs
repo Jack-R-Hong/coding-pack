@@ -15,21 +15,6 @@ pub fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Returns a greeting string identifying this plugin.
-pub fn hello() -> &'static str {
-    "Hello from coding-pack"
-}
-
-/// Returns a personalised greeting for the given name.
-pub fn greet(name: &str) -> String {
-    format!("Hello, {name}! from coding-pack")
-}
-
-/// Multiplies two i32 numbers and returns the result.
-pub fn multiply(a: i32, b: i32) -> i32 {
-    a * b
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -58,25 +43,8 @@ mod tests {
     }
 
     #[test]
-    fn hello_returns_expected_greeting() {
-        assert_eq!(hello(), "Hello from coding-pack");
-    }
-
-    #[test]
-    fn greet_returns_personalised_greeting() {
-        assert_eq!(greet("Alice"), "Hello, Alice! from coding-pack");
-    }
-
-    #[test]
     fn is_executable_returns_false_for_nonexistent_path() {
         let path = Path::new("/tmp/definitely_does_not_exist_xyz_123");
         assert!(!is_executable(path));
-    }
-
-    #[test]
-    fn multiply_returns_product_of_two_numbers() {
-        assert_eq!(multiply(3, 4), 12);
-        assert_eq!(multiply(-2, 5), -10);
-        assert_eq!(multiply(0, 99), 0);
     }
 }
