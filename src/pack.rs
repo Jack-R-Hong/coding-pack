@@ -239,26 +239,60 @@ pub fn execute_action(input: &CodingPackInput) -> Result<String, WitPluginError>
             )
         }
 
-        // ── Delegated to plugin-issue-sync via plugin_bridge ───────────
+        // ── Epic 22: GitHub issue sync (local implementation) ──────────
+        #[cfg(not(target_arch = "wasm32"))]
         "sync-github-issues" => {
-            to_json_string(crate::plugin_bridge::sync_github_issues(&config))
+            let result = crate::github_sync::sync_issues_to_board(&config)?;
+            to_json_string(serde_json::to_value(&result)
+                .map_err(|e| WitPluginError::internal(format!("JSON error: {e}"))))
+        }
+        #[cfg(target_arch = "wasm32")]
+        "sync-github-issues" => {
+            Err(WitPluginError::internal("sync-github-issues is not available in WASM builds"))
         }
 
-        // ── Delegated to plugin-workspace-tracker via plugin_bridge ────
+        // ── Epic 24: Worktree lifecycle (local implementation) ────────
+        #[cfg(not(target_arch = "wasm32"))]
         "cleanup-worktrees" => {
-            to_json_string(crate::plugin_bridge::cleanup_worktrees(&config))
+            let result = crate::worktree_tracker::cleanup_completed_worktrees(&config.base_dir)?;
+            to_json_string(serde_json::to_value(&result)
+                .map_err(|e| WitPluginError::internal(format!("JSON error: {e}"))))
         }
+        #[cfg(target_arch = "wasm32")]
+        "cleanup-worktrees" => {
+            Err(WitPluginError::internal("cleanup-worktrees is not available in WASM builds"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         "worktree-status" => {
-            to_json_string(crate::plugin_bridge::worktree_status(&config))
+            to_json_string(crate::worktree_tracker::worktree_status(&config.base_dir))
         }
+        #[cfg(target_arch = "wasm32")]
+        "worktree-status" => {
+            Err(WitPluginError::internal("worktree-status is not available in WASM builds"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         "recover-worktrees" => {
-            to_json_string(crate::plugin_bridge::recover_worktrees(&config))
+            let result = crate::worktree_tracker::recover_orphaned_worktrees(&config.base_dir)?;
+            to_json_string(serde_json::to_value(&result)
+                .map_err(|e| WitPluginError::internal(format!("JSON error: {e}"))))
+        }
+        #[cfg(target_arch = "wasm32")]
+        "recover-worktrees" => {
+            Err(WitPluginError::internal("recover-worktrees is not available in WASM builds"))
         }
 
-        // ── Delegated to plugin-feedback-loop via plugin_bridge ────────
+        // ── Epic 23: PR feedback loop (local implementation) ──────────
+        #[cfg(not(target_arch = "wasm32"))]
         "check-pr-reviews" => {
-            to_json_string(crate::plugin_bridge::check_pr_reviews(&config))
+            let assignments = crate::auto_dev::check_pending_reviews()?;
+            to_json_string(serde_json::to_value(&assignments)
+                .map_err(|e| WitPluginError::internal(format!("JSON error: {e}"))))
         }
+        #[cfg(target_arch = "wasm32")]
+        "check-pr-reviews" => {
+            Err(WitPluginError::internal("check-pr-reviews is not available in WASM builds"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         "build-fix-context" => {
             let pr_number = input
                 .payload
@@ -270,7 +304,30 @@ pub fn execute_action(input: &CodingPackInput) -> Result<String, WitPluginError>
                         "build-fix-context requires 'pr_number' in payload",
                     )
                 })?;
-            to_json_string(crate::plugin_bridge::build_fix_context(pr_number))
+            let client = crate::github_client::GitHubClient::new()?;
+            let ctx = client.build_fix_context(pr_number)?;
+            to_json_string(serde_json::to_value(&ctx)
+                .map_err(|e| WitPluginError::internal(format!("JSON error: {e}"))))
+        }
+        #[cfg(target_arch = "wasm32")]
+        "build-fix-context" => {
+            Err(WitPluginError::internal("build-fix-context is not available in WASM builds"))
+        }
+
+        // ── Epic 25: Mesh depth guard ─────────────────────────────────
+        "check-depth-guard" => {
+            if !config.agent_mesh.enabled {
+                return to_json_string(Ok(serde_json::json!({
+                    "status": "disabled",
+                    "message": "Agent mesh is not enabled for this workspace",
+                })));
+            }
+            let next = crate::mesh_guard::check_depth_guard(&config.agent_mesh)?;
+            to_json_string(Ok(serde_json::json!({
+                "status": "ok",
+                "next_depth": next,
+                "max_depth": config.agent_mesh.max_depth,
+            })))
         }
 
         // ── Delegated to plugin-test-runner via plugin_bridge ──────────
@@ -280,7 +337,7 @@ pub fn execute_action(input: &CodingPackInput) -> Result<String, WitPluginError>
         }
 
         other => Err(WitPluginError::not_found(format!(
-            "Unknown action: '{}'. Available: validate-pack, validate-workflows, list-workflows, list-plugins, status, execute-workflow, data-query, data-mutate, auto-dev-status, auto-dev-next, auto-dev-watch, sync-github-issues, cleanup-worktrees, worktree-status, recover-worktrees, check-pr-reviews, build-fix-context, run-tests, generate-agents-yaml",
+            "Unknown action: '{}'. Available: validate-pack, validate-workflows, list-workflows, list-plugins, status, execute-workflow, data-query, data-mutate, auto-dev-status, auto-dev-next, auto-dev-watch, sync-github-issues, cleanup-worktrees, worktree-status, recover-worktrees, check-pr-reviews, build-fix-context, check-depth-guard, run-tests, generate-agents-yaml",
             other
         ))),
     }

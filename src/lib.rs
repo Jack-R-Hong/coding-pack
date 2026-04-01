@@ -1,8 +1,17 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub mod agent_registry;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod auto_dev;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod board_client;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod config_injector;
 pub mod execution_history;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod github_client;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod github_sync;
+pub mod mesh_guard;
 pub mod pack;
 pub mod plugin_bridge;
 pub mod pulse_api;
@@ -11,6 +20,8 @@ pub mod tool_provider;
 pub mod util;
 pub mod validator;
 pub mod workspace;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod worktree_tracker;
 
 use std::path::Path;
 
