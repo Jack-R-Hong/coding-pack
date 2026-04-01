@@ -42,6 +42,24 @@ trap 'cleanup_on_exit; exit' INT TERM EXIT
 echo "[auto-dev] Starting daemon (interval=${INTERVAL}s, port=$PORT)"
 cd "$SCRIPT_DIR"
 
+# ── Startup: recover stale in-progress tasks ─────────────────────────────
+# If daemon crashed mid-run, board tasks may be stuck in "in-progress".
+# Reset them to "backlog" so they get picked up again.
+if curl -sf "$BASE_URL/api/v1/health" > /dev/null 2>&1; then
+    STALE_TASKS=$(curl -sf "$BASE_URL/api/v1/plugins/plugin-board/data/board/data" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+stale=[i['id'] for i in d.get('items',[]) if i['status']=='in-progress']
+for t in stale: print(t)
+" 2>/dev/null)
+    for STALE_ID in $STALE_TASKS; do
+        echo "[auto-dev] Recovering stale task: $STALE_ID (in-progress → backlog)"
+        curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$STALE_ID/metadata" \
+            -H "Content-Type: application/json" \
+            -d '{"status":"backlog"}' > /dev/null 2>&1 || true
+    done
+fi
+
 while true; do
     # Check server health
     if ! curl -sf "$BASE_URL/api/v1/health" > /dev/null 2>&1; then
@@ -207,12 +225,9 @@ print('no')
                             # Extract PR number for feedback loop
                             PR_NUM=$(echo "$PR_URL" | grep -oP '/pull/\K\d+' || true)
 
-                            # Trigger feedback loop if plugin is available
+                            # Trigger feedback loop for the new PR
                             if [ -n "$PR_NUM" ]; then
-                                curl -sf -X POST "$BASE_URL/api/v1/plugins/plugin-feedback-loop/execute" \
-                                    -H "Content-Type: application/json" \
-                                    -d "{\"action\": \"check\", \"params\": {\"pr_number\": $PR_NUM}}" \
-                                    > /dev/null 2>&1 || true
+                                echo "[auto-dev]   → Registered PR #$PR_NUM for feedback monitoring"
                             fi
                         else
                             echo "[auto-dev]   ⚠ PR creation failed: $PR_URL"
@@ -270,6 +285,30 @@ print('no')
         git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
         ACTIVE_WORKTREE=""
         ACTIVE_BRANCH=""
+    fi
+
+    # ── PR Feedback Loop ──────────────────────────────────────────────────
+    # Check for PRs with review feedback and create fix tasks automatically.
+    # plugin-feedback-loop handles: detect changes_requested → build fix context
+    # → create board task (pr-fix-{N}) → which this daemon picks up next cycle.
+    FEEDBACK_RESULT=$(curl -sf -X POST "$BASE_URL/api/v1/plugins/plugin-feedback-loop/execute" \
+        -H "Content-Type: application/json" \
+        -d '{"action": "run-cycle"}' 2>/dev/null) || true
+
+    if [ -n "$FEEDBACK_RESULT" ] && [ "$FEEDBACK_RESULT" != "null" ]; then
+        FIX_COUNT=$(echo "$FEEDBACK_RESULT" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    c=d.get('content',d)
+    if isinstance(c,str): c=json.loads(c)
+    tasks=c.get('fix_tasks_created',c.get('tasks_created',0))
+    print(tasks if isinstance(tasks,int) else len(tasks) if isinstance(tasks,list) else 0)
+except: print(0)
+" 2>/dev/null)
+        if [ "${FIX_COUNT:-0}" -gt 0 ]; then
+            echo "[auto-dev] $(date +%H:%M:%S) Feedback loop: created $FIX_COUNT fix task(s) from PR reviews"
+        fi
     fi
 
     sleep "$INTERVAL"
