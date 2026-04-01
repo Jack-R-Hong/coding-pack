@@ -69,12 +69,4 @@ steps:
       context_from: [implement]
       timeout_seconds: 300
 
-  # Step 5: Commit
-  - id: git_commit
-    type: function
-    depends_on: [qa_review]
-    executor: git-ops
-    config:
-      command: ["git-ops", "commit"]
-      operation: commit
 
