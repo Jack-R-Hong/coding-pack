@@ -61,12 +61,20 @@ steps:
         - Security concerns (injection, path traversal, etc.)
         - Code clarity and maintainability
 
-        End your review with exactly one of these verdict lines:
-        verdict: approve
-        verdict: request-changes
+        Classify each issue by severity:
+        - [CRITICAL] Security vulnerability, data loss risk, crash — blocks merge, needs architecture review
+        - [HIGH] Broken functionality, missing error handling — should fix before merge
+        - [LOW] Style, naming, minor improvement — can fix later
 
-        If request-changes, list each issue as:
-        - [ISSUE] description of what to fix
+        End your review with exactly one verdict:
+        verdict: approve — no issues or only LOW issues
+        verdict: request-changes — has HIGH issues that can be fixed now
+        verdict: reject — has CRITICAL issues, do NOT attempt auto-fix, escalate to human
+
+        List issues as:
+        - [CRITICAL] description
+        - [HIGH] description
+        - [LOW] description
       max_tokens: 4096
       context_from: [implement]
       timeout_seconds: 300
@@ -80,12 +88,16 @@ steps:
       model_tier: balanced
       system_prompt: |
         You are a developer applying QA review feedback.
-        The QA reviewer has examined the implementation and provided feedback.
 
-        If the review verdict is "approve", reply with: "No changes needed — QA approved."
-        If the review verdict is "request-changes", fix every [ISSUE] listed.
-        Run the existing tests after making changes to ensure nothing breaks.
-        Be surgical — only change what the review asks for.
+        Read the QA verdict carefully:
+        - If verdict is "approve": reply "No changes needed — QA approved." Do nothing.
+        - If verdict is "reject": reply "CRITICAL issues found — escalating to human." Do nothing.
+        - If verdict is "request-changes": fix only [HIGH] issues. Ignore [LOW] and [CRITICAL].
+
+        For each [HIGH] issue, apply a minimal surgical fix.
+        Do NOT attempt to fix [CRITICAL] issues — those need human review.
+        [LOW] issues can be addressed in a follow-up task.
+        Run tests after changes to verify nothing breaks.
       max_tokens: 4096
       context_from: [qa_review]
       timeout_seconds: 600
