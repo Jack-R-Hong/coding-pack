@@ -124,29 +124,48 @@ print(json.dumps({'input': inp, 'metadata': {'workspace_path': workspace, 'task_
             STATE=$(curl -sf "$BASE_URL/api/v1/tasks/$WF_TASK_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'])" 2>/dev/null)
             if [ "$STATE" = "Completed" ]; then
                 echo "[auto-dev]   → Completed in $((i*10))s"
+
+                # Check QA verdict from apply_fixes step output
+                QA_REJECTED=$(curl -sf "$BASE_URL/api/v1/tasks/$WF_TASK_ID" 2>/dev/null | python3 -c "
+import sys,json,urllib.request
+d=json.load(sys.stdin)
+for e in d.get('events',[]):
+    if 'Completed' not in e: continue
+    for s in e['Completed'].get('output',{}).get('content',{}).get('step_summaries',[]):
+        if s['step_id'] in ('apply_fixes','qa_review'):
+            try:
+                resp=urllib.request.urlopen(f'http://127.0.0.1:${PORT}/api/v1/tasks/{s[\"task_id\"]}')
+                detail=json.loads(resp.read())
+                for ev in detail.get('events',[]):
+                    if 'Completed' in ev:
+                        c=str(ev['Completed'].get('output',{}).get('content',''))
+                        if 'CRITICAL' in c and ('reject' in c.lower() or 'escalat' in c.lower()):
+                            print('yes'); sys.exit()
+            except: pass
+print('no')
+" 2>/dev/null)
+
+                if [ "$QA_REJECTED" = "yes" ]; then
+                    echo "[auto-dev]   ⛔ QA REJECTED (CRITICAL issues) — NOT merging, escalate to human"
+                    curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
+                        -H "Content-Type: application/json" \
+                        -d "{\"status\":\"review\"}" > /dev/null 2>&1 || true
+
+                    # Keep worktree for human inspection
+                    echo "[auto-dev]   → Worktree kept at: $WORKTREE_DIR (branch: $BRANCH_NAME)"
+                    break
+                fi
+
                 curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
                     -H "Content-Type: application/json" \
                     -d "{\"status\":\"done\"}" > /dev/null 2>&1 || true
-
-                # Fetch post-execution metrics and log summary
-                _POST_METRICS=$(curl -sf "$BASE_URL/api/v1/metrics" 2>/dev/null || true)
-                POST_COMPLETED=$(echo "$_POST_METRICS" | grep -m1 'pulse_tasks_total{.*state="completed"' | awk '{printf "%d\n", $NF}')
-                POST_FAILED=$(echo "$_POST_METRICS"    | grep -m1 'pulse_tasks_total{.*state="failed"'    | awk '{printf "%d\n", $NF}')
-                POST_TOKENS=$(echo "$_POST_METRICS"    | grep -m1 'pulse_tokens_total'                    | awk '{printf "%d\n", $NF}')
-                POST_COMPLETED=${POST_COMPLETED:-0}
-                POST_FAILED=${POST_FAILED:-0}
-                POST_TOKENS=${POST_TOKENS:-0}
-                echo "[auto-dev]   → Metrics: completed=$POST_COMPLETED, failed=$POST_FAILED, tokens=$POST_TOKENS"
-                if [ "$POST_COMPLETED" -le "$PRE_COMPLETED" ] 2>/dev/null; then
-                    echo "[auto-dev]   ⚠ Warning: completion metric did not increase"
-                fi
 
                 # Merge worktree branch into main repo, then clean up
                 echo "[auto-dev]   → Merging $BRANCH_NAME into main repo"
                 if git -C "$SCRIPT_DIR" merge "$BRANCH_NAME" --no-edit; then
                     echo "[auto-dev]   → Merge successful"
                 else
-                    echo "[auto-dev]   ⚠ Merge failed — worktree branch left as $BRANCH_NAME for manual resolution"
+                    echo "[auto-dev]   ⚠ Merge conflict — branch kept as $BRANCH_NAME for manual resolution"
                 fi
                 git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
                 git -C "$SCRIPT_DIR" branch -d "$BRANCH_NAME" 2>/dev/null || true
