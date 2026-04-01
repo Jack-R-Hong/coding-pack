@@ -78,6 +78,16 @@ else:
     echo "[auto-dev] $(date +%H:%M:%S) Found task: $TASK_TITLE (labels=$LABELS)"
     echo "[auto-dev]   → Dispatching workflow: $WORKFLOW"
 
+    # Create an isolated git worktree for this task
+    BRANCH_NAME="auto-dev/${TASK_ID}"
+    WORKTREE_DIR="/tmp/pulse-worktree-${TASK_ID}"
+    if ! git -C "$SCRIPT_DIR" worktree add "$WORKTREE_DIR" -b "$BRANCH_NAME" 2>&1; then
+        echo "[auto-dev]   → Failed to create worktree for $BRANCH_NAME, skipping task"
+        sleep "$INTERVAL"
+        continue
+    fi
+    echo "[auto-dev]   → Worktree created: $WORKTREE_DIR (branch=$BRANCH_NAME)"
+
     # Update task status to in-progress
     curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
         -H "Content-Type: application/json" \
@@ -97,7 +107,7 @@ workspace = sys.argv[3]
 task_id = sys.argv[4]
 inp = title if not desc else f'{title}\n\n{desc}'
 print(json.dumps({'input': inp, 'metadata': {'workspace_path': workspace, 'task_id': task_id}}))
-" "$TASK_TITLE" "$TASK_DESC" "$SCRIPT_DIR" "$TASK_ID")
+" "$TASK_TITLE" "$TASK_DESC" "$WORKTREE_DIR" "$TASK_ID")
 
     RESULT=$(curl -sf -X POST "$BASE_URL/api/v1/workflows/$WORKFLOW/execute" \
         -H "Content-Type: application/json" \
@@ -131,12 +141,28 @@ print(json.dumps({'input': inp, 'metadata': {'workspace_path': workspace, 'task_
                     echo "[auto-dev]   ⚠ Warning: completion metric did not increase"
                 fi
 
+                # Merge worktree branch into main repo, then clean up
+                echo "[auto-dev]   → Merging $BRANCH_NAME into main repo"
+                if git -C "$SCRIPT_DIR" merge "$BRANCH_NAME" --no-edit; then
+                    echo "[auto-dev]   → Merge successful"
+                else
+                    echo "[auto-dev]   ⚠ Merge failed — worktree branch left as $BRANCH_NAME for manual resolution"
+                fi
+                git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
+                git -C "$SCRIPT_DIR" branch -d "$BRANCH_NAME" 2>/dev/null || true
+
                 break
             elif [ "$STATE" = "Failed" ]; then
                 echo "[auto-dev]   → Failed after $((i*10))s"
                 curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
                     -H "Content-Type: application/json" \
                     -d "{\"status\":\"backlog\"}" > /dev/null 2>&1 || true
+
+                # Clean up worktree without merging
+                echo "[auto-dev]   → Removing worktree (no merge)"
+                git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
+                git -C "$SCRIPT_DIR" branch -d "$BRANCH_NAME" 2>/dev/null || true
+
                 break
             fi
         done
@@ -145,6 +171,11 @@ print(json.dumps({'input': inp, 'metadata': {'workspace_path': workspace, 'task_
         curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
             -H "Content-Type: application/json" \
             -d "{\"status\":\"backlog\"}" > /dev/null 2>&1 || true
+
+        # Clean up worktree without merging
+        echo "[auto-dev]   → Removing worktree (no merge)"
+        git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
+        git -C "$SCRIPT_DIR" branch -d "$BRANCH_NAME" 2>/dev/null || true
     fi
 
     sleep "$INTERVAL"
