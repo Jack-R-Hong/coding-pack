@@ -27,7 +27,17 @@ if [ -f "$LOCKFILE" ]; then
     rm -f "$LOCKFILE"
 fi
 echo $$ > "$LOCKFILE"
-trap 'rm -f "$LOCKFILE"; exit' INT TERM EXIT
+ACTIVE_WORKTREE=""
+ACTIVE_BRANCH=""
+cleanup_on_exit() {
+    if [ -n "$ACTIVE_WORKTREE" ]; then
+        echo "[auto-dev] Cleaning up worktree on exit: $ACTIVE_WORKTREE"
+        git -C "$SCRIPT_DIR" worktree remove "$ACTIVE_WORKTREE" --force 2>/dev/null || true
+        git -C "$SCRIPT_DIR" branch -D "$ACTIVE_BRANCH" 2>/dev/null || true
+    fi
+    rm -f "$LOCKFILE"
+}
+trap 'cleanup_on_exit; exit' INT TERM EXIT
 
 echo "[auto-dev] Starting daemon (interval=${INTERVAL}s, port=$PORT)"
 cd "$SCRIPT_DIR"
@@ -80,12 +90,25 @@ else:
 
     # Create an isolated git worktree for this task
     BRANCH_NAME="auto-dev/${TASK_ID}"
-    WORKTREE_DIR="/tmp/pulse-worktree-${TASK_ID}"
+    WORKTREE_DIR="${TMPDIR:-/tmp}/pulse-worktree-${TASK_ID}"
+
+    # Clean up stale worktree/branch from previous failed runs
+    if [ -d "$WORKTREE_DIR" ]; then
+        echo "[auto-dev]   → Removing stale worktree: $WORKTREE_DIR"
+        git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || rm -rf "$WORKTREE_DIR"
+    fi
+    if git -C "$SCRIPT_DIR" rev-parse --verify "$BRANCH_NAME" >/dev/null 2>&1; then
+        echo "[auto-dev]   → Removing stale branch: $BRANCH_NAME"
+        git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
+    fi
+
     if ! git -C "$SCRIPT_DIR" worktree add "$WORKTREE_DIR" -b "$BRANCH_NAME" 2>&1; then
         echo "[auto-dev]   → Failed to create worktree for $BRANCH_NAME, skipping task"
         sleep "$INTERVAL"
         continue
     fi
+    ACTIVE_WORKTREE="$WORKTREE_DIR"
+    ACTIVE_BRANCH="$BRANCH_NAME"
     echo "[auto-dev]   → Worktree created: $WORKTREE_DIR (branch=$BRANCH_NAME)"
 
     # Update task status to in-progress
@@ -153,6 +176,8 @@ print('no')
 
                     # Keep worktree for human inspection
                     echo "[auto-dev]   → Worktree kept at: $WORKTREE_DIR (branch: $BRANCH_NAME)"
+                    ACTIVE_WORKTREE=""
+                    ACTIVE_BRANCH=""
                     break
                 fi
 
@@ -161,14 +186,25 @@ print('no')
                     -d "{\"status\":\"done\"}" > /dev/null 2>&1 || true
 
                 # Merge worktree branch into main repo, then clean up
-                echo "[auto-dev]   → Merging $BRANCH_NAME into main repo"
-                if git -C "$SCRIPT_DIR" merge "$BRANCH_NAME" --no-edit; then
-                    echo "[auto-dev]   → Merge successful"
+                # Only merge if the branch has changes relative to main
+                DIFF_COUNT=$(git -C "$SCRIPT_DIR" rev-list --count "main..$BRANCH_NAME" 2>/dev/null || echo "0")
+                if [ "$DIFF_COUNT" -gt 0 ]; then
+                    echo "[auto-dev]   → Merging $BRANCH_NAME ($DIFF_COUNT commits) into main"
+                    if git -C "$SCRIPT_DIR" merge "$BRANCH_NAME" --no-edit; then
+                        echo "[auto-dev]   → Merge successful"
+                    else
+                        echo "[auto-dev]   ⚠ Merge conflict — branch kept as $BRANCH_NAME for manual resolution"
+                        ACTIVE_WORKTREE=""
+                        ACTIVE_BRANCH=""
+                        break
+                    fi
                 else
-                    echo "[auto-dev]   ⚠ Merge conflict — branch kept as $BRANCH_NAME for manual resolution"
+                    echo "[auto-dev]   → No changes on $BRANCH_NAME, skipping merge"
                 fi
                 git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
-                git -C "$SCRIPT_DIR" branch -d "$BRANCH_NAME" 2>/dev/null || true
+                git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
+                ACTIVE_WORKTREE=""
+                ACTIVE_BRANCH=""
 
                 break
             elif [ "$STATE" = "Failed" ]; then
@@ -180,7 +216,9 @@ print('no')
                 # Clean up worktree without merging
                 echo "[auto-dev]   → Removing worktree (no merge)"
                 git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
-                git -C "$SCRIPT_DIR" branch -d "$BRANCH_NAME" 2>/dev/null || true
+                git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
+                ACTIVE_WORKTREE=""
+                ACTIVE_BRANCH=""
 
                 break
             fi
@@ -194,7 +232,9 @@ print('no')
         # Clean up worktree without merging
         echo "[auto-dev]   → Removing worktree (no merge)"
         git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
-        git -C "$SCRIPT_DIR" branch -d "$BRANCH_NAME" 2>/dev/null || true
+        git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
+        ACTIVE_WORKTREE=""
+        ACTIVE_BRANCH=""
     fi
 
     sleep "$INTERVAL"
