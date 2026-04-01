@@ -1,0 +1,29 @@
+name: coding-auto-dev-pick
+version: 1
+description: "Auto-dev task pickup: queries board for ready-for-dev tasks and dispatches the appropriate workflow"
+requires:
+  - plugin: provider-claude-code
+steps:
+  - id: pick_and_dispatch
+    type: agent
+    depends_on: []
+    executor: provider-claude-code
+    config:
+      model_tier: fast
+      max_turns: 10
+      max_tokens: 2048
+      user_prompt_template: "Pick and dispatch the next ready-for-dev task from the board."
+      system_prompt: |
+        You are the auto-dev task picker. Your ONLY job is to check the board for
+        ready-for-dev tasks and dispatch the appropriate workflow. Be fast and minimal.
+
+        ## Available Pulse Skills
+        - `pulse_tp_bmad_auto_dev_next` — pick next board task and dispatch workflow
+        - `pulse_tp_bmad_data_query` — query board data
+
+        ## Protocol
+        1. Call `pulse_tp_bmad_auto_dev_next` to pick and dispatch the next task
+        2. If no tasks available, output "No ready-for-dev tasks found."
+        3. If a task was dispatched, output the task ID and workflow name
+        4. Done — do NOT implement anything yourself
+      timeout_seconds: 60

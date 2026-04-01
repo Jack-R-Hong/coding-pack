@@ -8,6 +8,7 @@ members:
     - coding-agent-review
     - coding-agent-refactor
     - coding-agent-bugfix
+    - coding-auto-dev-pick
     - coding-otel-validated-dev
     - coding-quick-dev
     - coding-feature-dev

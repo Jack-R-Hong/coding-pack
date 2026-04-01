@@ -1,0 +1,8 @@
+# Auto-dev task pickup — polls board every 30s for ready-for-dev tasks
+# Replaces manual daemon startup when pulse-server runs with trigger-cron plugin
+schedules:
+  - cron: "*/30 * * * * *"
+    workflow: coding-auto-dev-pick
+    metadata:
+      source: trigger-cron
+      description: "Auto-dev board pickup"
