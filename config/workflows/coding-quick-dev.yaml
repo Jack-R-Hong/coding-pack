@@ -1,6 +1,6 @@
 name: coding-quick-dev
 version: 1
-description: "Quick development: rapid spec → implement → test → commit (minimal ceremony)"
+description: "Quick development: spec → implement → test → QA review → commit"
 requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
@@ -48,13 +48,33 @@ steps:
       action: validate
       timeout_seconds: 120
 
-  # Step 4: Commit
+  # Step 4: QA review
+  - id: qa_review
+    type: agent
+    depends_on: [run_tests]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/qa. Review this implementation for quality issues:
+        - Edge cases not covered by tests
+        - Error handling gaps
+        - Security concerns (injection, path traversal, etc.)
+        - Code clarity and maintainability
+        End your review with exactly one of:
+        verdict: approve
+        verdict: request-changes
+        If request-changes, list specific issues to fix.
+      max_tokens: 4096
+      context_from: [implement]
+      timeout_seconds: 300
+
+  # Step 5: Commit
   - id: git_commit
     type: function
-    depends_on: [run_tests]
+    depends_on: [qa_review]
     executor: git-ops
     config:
       command: ["git-ops", "commit"]
       operation: commit
-      message: "feat: auto-dev quick implementation"
 
