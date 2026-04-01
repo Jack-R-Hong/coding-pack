@@ -1,10 +1,9 @@
 name: coding-quick-dev
-version: 1
-description: "Quick development: spec → implement → test → QA review → commit"
+version: 2
+description: "Quick development: spec → implement → test → QA review → fix → re-test"
 requires:
   - plugin: provider-claude-code
   - plugin: bmad-method
-  - plugin: plugin-git-ops
   - plugin: plugin-test-runner
 steps:
   # Step 1: Quick Flow Solo Dev creates lean spec
@@ -24,7 +23,7 @@ steps:
       max_tokens: 2048
       timeout_seconds: 180
 
-  # Step 2: Implement immediately
+  # Step 2: Implement
   - id: implement
     type: agent
     depends_on: [quick_spec]
@@ -61,12 +60,42 @@ steps:
         - Error handling gaps
         - Security concerns (injection, path traversal, etc.)
         - Code clarity and maintainability
-        End your review with exactly one of:
+
+        End your review with exactly one of these verdict lines:
         verdict: approve
         verdict: request-changes
-        If request-changes, list specific issues to fix.
+
+        If request-changes, list each issue as:
+        - [ISSUE] description of what to fix
       max_tokens: 4096
       context_from: [implement]
       timeout_seconds: 300
 
+  # Step 5: Apply QA fixes (uses QA feedback as instructions)
+  - id: apply_fixes
+    type: agent
+    depends_on: [qa_review]
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are a developer applying QA review feedback.
+        The QA reviewer has examined the implementation and provided feedback.
 
+        If the review verdict is "approve", reply with: "No changes needed — QA approved."
+        If the review verdict is "request-changes", fix every [ISSUE] listed.
+        Run the existing tests after making changes to ensure nothing breaks.
+        Be surgical — only change what the review asks for.
+      max_tokens: 4096
+      context_from: [qa_review]
+      timeout_seconds: 600
+
+  # Step 6: Re-test after fixes
+  - id: retest
+    type: function
+    depends_on: [apply_fixes]
+    executor: plugin-test-runner
+    config:
+      command: ["plugin-test-runner", "validate"]
+      action: validate
+      timeout_seconds: 120
