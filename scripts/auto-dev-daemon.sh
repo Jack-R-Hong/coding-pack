@@ -43,22 +43,47 @@ echo "[auto-dev] Starting daemon (interval=${INTERVAL}s, port=$PORT)"
 cd "$SCRIPT_DIR"
 
 # ── Startup: recover stale in-progress tasks ─────────────────────────────
-# If daemon crashed mid-run, board tasks may be stuck in "in-progress".
-# Reset them to "backlog" so they get picked up again.
 if curl -sf "$BASE_URL/api/v1/health" > /dev/null 2>&1; then
     STALE_TASKS=$(curl -sf "$BASE_URL/api/v1/plugins/plugin-board/data/board/data" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-stale=[i['id'] for i in d.get('items',[]) if i['status']=='in-progress']
+stale=[i.get('id') for i in d.get('items',[]) if i.get('status')=='in-progress' and i.get('id')]
 for t in stale: print(t)
 " 2>/dev/null)
     for STALE_ID in $STALE_TASKS; do
         echo "[auto-dev] Recovering stale task: $STALE_ID (in-progress → backlog)"
+        # Clean up any leftover remote branch from previous run
+        git -C "$SCRIPT_DIR" push origin --delete "auto-dev/${STALE_ID}" 2>/dev/null || true
         curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$STALE_ID/metadata" \
             -H "Content-Type: application/json" \
             -d '{"status":"backlog"}' > /dev/null 2>&1 || true
     done
+else
+    echo "[auto-dev] ⚠ Server unavailable at startup — stale task recovery skipped"
 fi
+
+# ── Helper: run feedback loop ─────────────────────────────────────────────
+run_feedback_loop() {
+    FEEDBACK_RESULT=$(curl -sf -X POST "$BASE_URL/api/v1/plugins/plugin-feedback-loop/execute" \
+        -H "Content-Type: application/json" \
+        -d '{"action": "run-cycle"}' 2>/dev/null) || true
+
+    if [ -n "$FEEDBACK_RESULT" ] && [ "$FEEDBACK_RESULT" != "null" ]; then
+        FIX_COUNT=$(echo "$FEEDBACK_RESULT" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    c=d.get('content',d)
+    if isinstance(c,str): c=json.loads(c)
+    tasks=c.get('fix_tasks_created',c.get('tasks_created',0))
+    print(tasks if isinstance(tasks,int) else len(tasks) if isinstance(tasks,list) else 0)
+except: print(0)
+" 2>/dev/null)
+        if [ "${FIX_COUNT:-0}" -gt 0 ]; then
+            echo "[auto-dev] $(date +%H:%M:%S) Feedback loop: created $FIX_COUNT fix task(s) from PR reviews"
+        fi
+    fi
+}
 
 while true; do
     # Check server health
@@ -68,15 +93,17 @@ while true; do
         continue
     fi
 
+    # [H-3 fix] Always run feedback loop, even when board is empty
+    run_feedback_loop
+
     # Find next ready-for-dev task from board
     TASK_JSON=$(curl -sf "$BASE_URL/api/v1/plugins/plugin-board/data/board/data" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)
-ready=[i for i in d.get('items',[]) if i['status']=='ready-for-dev']
+ready=[i for i in d.get('items',[]) if i.get('status')=='ready-for-dev']
 if not ready:
     print('null')
 else:
-    # Pick highest priority (or first)
     print(json.dumps(ready[0]))
 " 2>/dev/null)
 
@@ -116,9 +143,11 @@ else:
         git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || rm -rf "$WORKTREE_DIR"
     fi
     if git -C "$SCRIPT_DIR" rev-parse --verify "$BRANCH_NAME" >/dev/null 2>&1; then
-        echo "[auto-dev]   → Removing stale branch: $BRANCH_NAME"
+        echo "[auto-dev]   → Removing stale local branch: $BRANCH_NAME"
         git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
     fi
+    # [M-1 fix] Clean stale remote branch to avoid push conflicts
+    git -C "$SCRIPT_DIR" push origin --delete "$BRANCH_NAME" 2>/dev/null || true
 
     if ! git -C "$SCRIPT_DIR" worktree add "$WORKTREE_DIR" -b "$BRANCH_NAME" 2>&1; then
         echo "[auto-dev]   → Failed to create worktree for $BRANCH_NAME, skipping task"
@@ -134,12 +163,7 @@ else:
         -H "Content-Type: application/json" \
         -d "{\"status\":\"in-progress\"}" > /dev/null 2>&1 || true
 
-    # Capture pre-execution metrics baseline (completed count before dispatch)
-    _PRE_METRICS=$(curl -sf "$BASE_URL/api/v1/metrics" 2>/dev/null || true)
-    PRE_COMPLETED=$(echo "$_PRE_METRICS" | grep -m1 'pulse_tasks_total{.*state="completed"' | awk '{printf "%d\n", $NF}')
-    PRE_COMPLETED=${PRE_COMPLETED:-0}
-
-    # Dispatch workflow — use python to safely JSON-encode the input
+    # Dispatch workflow
     PAYLOAD=$(python3 -c "
 import json, sys
 title = sys.argv[1]
@@ -160,6 +184,7 @@ print(json.dumps({'input': inp, 'metadata': {'workspace_path': workspace, 'task_
         echo "[auto-dev]   → Submitted: task_id=$WF_TASK_ID"
 
         # Wait for completion (poll every 10s, max 5min)
+        SKIP_CLEANUP=false
         for i in $(seq 1 30); do
             sleep 10
             STATE=$(curl -sf "$BASE_URL/api/v1/tasks/$WF_TASK_ID" | python3 -c "import sys,json; print(json.load(sys.stdin)['state'])" 2>/dev/null)
@@ -186,31 +211,27 @@ for e in d.get('events',[]):
 print('no')
 " 2>/dev/null)
 
+                # [H-1 fix] QA rejection — preserve worktree, skip cleanup
                 if [ "$QA_REJECTED" = "yes" ]; then
                     echo "[auto-dev]   ⛔ QA REJECTED (CRITICAL issues) — NOT merging, escalate to human"
                     curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
                         -H "Content-Type: application/json" \
                         -d "{\"status\":\"review\"}" > /dev/null 2>&1 || true
-
-                    # Keep worktree for human inspection
                     echo "[auto-dev]   → Worktree kept at: $WORKTREE_DIR (branch: $BRANCH_NAME)"
+                    SKIP_CLEANUP=true
                     ACTIVE_WORKTREE=""
                     ACTIVE_BRANCH=""
                     break
                 fi
 
-                curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
-                    -H "Content-Type: application/json" \
-                    -d "{\"status\":\"done\"}" > /dev/null 2>&1 || true
-
                 # Push branch and create PR if there are changes
                 DIFF_COUNT=$(git -C "$SCRIPT_DIR" rev-list --count "main..$BRANCH_NAME" 2>/dev/null || echo "0")
+                LANDED=false
                 if [ "$DIFF_COUNT" -gt 0 ]; then
                     echo "[auto-dev]   → Pushing $BRANCH_NAME ($DIFF_COUNT commits)"
                     if git -C "$SCRIPT_DIR" push origin "$BRANCH_NAME" 2>&1; then
                         echo "[auto-dev]   → Push successful"
 
-                        # Create PR via gh CLI
                         PR_BODY=$(printf "## Auto-Dev\n\n**Task:** %s\n**Task ID:** %s\n**Workflow:** %s\n**Commits:** %s\n\n---\nGenerated by Pulse Auto-Dev" \
                             "$TASK_TITLE" "$TASK_ID" "$WORKFLOW" "$DIFF_COUNT")
                         PR_URL=$(cd "$SCRIPT_DIR" && gh pr create \
@@ -221,38 +242,48 @@ print('no')
 
                         if echo "$PR_URL" | grep -q 'https://'; then
                             echo "[auto-dev]   → PR created: $PR_URL"
-
-                            # Extract PR number for feedback loop
-                            PR_NUM=$(echo "$PR_URL" | grep -oP '/pull/\K\d+' || true)
-
-                            # Trigger feedback loop for the new PR
-                            if [ -n "$PR_NUM" ]; then
-                                echo "[auto-dev]   → Registered PR #$PR_NUM for feedback monitoring"
-                            fi
+                            LANDED=true
                         else
                             echo "[auto-dev]   ⚠ PR creation failed: $PR_URL"
-                            # Fall back to merge into main locally
                             echo "[auto-dev]   → Falling back to local merge"
-                            git -C "$SCRIPT_DIR" merge "$BRANCH_NAME" --no-edit 2>&1 || true
+                            if git -C "$SCRIPT_DIR" merge "$BRANCH_NAME" --no-edit; then
+                                LANDED=true
+                            else
+                                echo "[auto-dev]   ⚠ Merge conflict — branch kept as $BRANCH_NAME"
+                                SKIP_CLEANUP=true
+                            fi
                         fi
                     else
                         echo "[auto-dev]   ⚠ Push failed — merging locally instead"
                         if git -C "$SCRIPT_DIR" merge "$BRANCH_NAME" --no-edit; then
                             echo "[auto-dev]   → Local merge successful"
+                            LANDED=true
                         else
                             echo "[auto-dev]   ⚠ Merge conflict — branch kept as $BRANCH_NAME"
-                            ACTIVE_WORKTREE=""
-                            ACTIVE_BRANCH=""
-                            break
+                            SKIP_CLEANUP=true
                         fi
                     fi
                 else
                     echo "[auto-dev]   → No changes on $BRANCH_NAME, skipping"
+                    LANDED=true
                 fi
-                git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
-                # Don't delete remote branch — PR needs it
-                # Only delete local branch ref
-                git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
+
+                # [H-2 fix] Only mark done AFTER code is landed
+                if [ "$LANDED" = true ]; then
+                    curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
+                        -H "Content-Type: application/json" \
+                        -d "{\"status\":\"done\"}" > /dev/null 2>&1 || true
+                else
+                    curl -sf -X PATCH "$BASE_URL/api/v1/tasks/$TASK_ID/metadata" \
+                        -H "Content-Type: application/json" \
+                        -d "{\"status\":\"review\"}" > /dev/null 2>&1 || true
+                fi
+
+                # Cleanup worktree unless we need to preserve it
+                if [ "$SKIP_CLEANUP" = false ]; then
+                    git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
+                    git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
+                fi
                 ACTIVE_WORKTREE=""
                 ACTIVE_BRANCH=""
 
@@ -263,8 +294,6 @@ print('no')
                     -H "Content-Type: application/json" \
                     -d "{\"status\":\"backlog\"}" > /dev/null 2>&1 || true
 
-                # Clean up worktree without merging
-                echo "[auto-dev]   → Removing worktree (no merge)"
                 git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
                 git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
                 ACTIVE_WORKTREE=""
@@ -279,36 +308,10 @@ print('no')
             -H "Content-Type: application/json" \
             -d "{\"status\":\"backlog\"}" > /dev/null 2>&1 || true
 
-        # Clean up worktree without merging
-        echo "[auto-dev]   → Removing worktree (no merge)"
         git -C "$SCRIPT_DIR" worktree remove "$WORKTREE_DIR" --force 2>/dev/null || true
         git -C "$SCRIPT_DIR" branch -D "$BRANCH_NAME" 2>/dev/null || true
         ACTIVE_WORKTREE=""
         ACTIVE_BRANCH=""
-    fi
-
-    # ── PR Feedback Loop ──────────────────────────────────────────────────
-    # Check for PRs with review feedback and create fix tasks automatically.
-    # plugin-feedback-loop handles: detect changes_requested → build fix context
-    # → create board task (pr-fix-{N}) → which this daemon picks up next cycle.
-    FEEDBACK_RESULT=$(curl -sf -X POST "$BASE_URL/api/v1/plugins/plugin-feedback-loop/execute" \
-        -H "Content-Type: application/json" \
-        -d '{"action": "run-cycle"}' 2>/dev/null) || true
-
-    if [ -n "$FEEDBACK_RESULT" ] && [ "$FEEDBACK_RESULT" != "null" ]; then
-        FIX_COUNT=$(echo "$FEEDBACK_RESULT" | python3 -c "
-import sys,json
-try:
-    d=json.load(sys.stdin)
-    c=d.get('content',d)
-    if isinstance(c,str): c=json.loads(c)
-    tasks=c.get('fix_tasks_created',c.get('tasks_created',0))
-    print(tasks if isinstance(tasks,int) else len(tasks) if isinstance(tasks,list) else 0)
-except: print(0)
-" 2>/dev/null)
-        if [ "${FIX_COUNT:-0}" -gt 0 ]; then
-            echo "[auto-dev] $(date +%H:%M:%S) Feedback loop: created $FIX_COUNT fix task(s) from PR reviews"
-        fi
     fi
 
     sleep "$INTERVAL"
