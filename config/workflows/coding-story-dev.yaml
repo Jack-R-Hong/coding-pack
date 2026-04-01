@@ -116,16 +116,14 @@ steps:
   - id: git_push
     type: function
     depends_on: [git_commit]
-    executor: plugin-git-ops
     config:
-      command: ["plugin-git-pr", "push"]
-      timeout_seconds: 30
+      command: ["bash", "-c", "git push origin HEAD"]
+      timeout_seconds: 60
 
   # Step 10: Create pull request
   - id: create_pr
     type: function
     depends_on: [git_push]
-    executor: plugin-git-ops
     config:
-      command: ["plugin-git-pr", "create-pr", "feat: {{input}}", "{{issue_closing_ref}}"]
+      command: ["bash", "-c", "gh pr create --fill --base main"]
       timeout_seconds: 30
