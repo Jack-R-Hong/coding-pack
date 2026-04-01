@@ -1,0 +1,140 @@
+name: coding-otel-validated-dev
+version: 1
+description: "OTel-validated development: capture baseline metrics → implement → compare metrics → fix regressions"
+requires:
+  - plugin: provider-claude-code
+  - plugin: bmad-method
+  - plugin: plugin-test-runner
+steps:
+  # Step 1: Capture baseline metrics (build time, test results, binary size, pulse metrics)
+  - id: baseline_capture
+    type: function
+    depends_on: []
+    config:
+      command: ["bash", "-c", "./scripts/capture-otel-metrics.sh ."]
+      timeout_seconds: 600
+
+  # Step 2: Quick spec — lean design for the requested change
+  - id: quick_spec
+    type: agent
+    depends_on: [baseline_capture]
+    executor: bmad-method
+    config:
+      model_tier: fast
+      system_prompt: |
+        You are bmad/quick-flow-solo-dev. Create a minimal but complete tech spec:
+        - What to build (scope boundary)
+        - Key implementation decisions
+        - Files to create/modify
+        - Test approach (1-2 sentences)
+        - Performance considerations — what metrics could regress?
+        Keep it lean. No bureaucracy.
+      max_tokens: 2048
+      timeout_seconds: 180
+
+  # Step 3: Implement the change
+  - id: implement
+    type: agent
+    depends_on: [quick_spec]
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are a fast-moving developer. Implement cleanly and efficiently per the spec.
+        Ship working code with basic test coverage.
+        Be mindful of performance — avoid unnecessary allocations, clones, or heavy dependencies.
+      max_tokens: 4096
+      context_from: [quick_spec]
+      timeout_seconds: 600
+
+  # Step 4: Run tests
+  - id: run_tests
+    type: function
+    depends_on: [implement]
+    executor: plugin-test-runner
+    config:
+      command: ["plugin-test-runner", "validate"]
+      action: validate
+      timeout_seconds: 120
+
+  # Step 5: Capture post-change metrics
+  - id: post_capture
+    type: function
+    depends_on: [run_tests]
+    config:
+      command: ["bash", "-c", "./scripts/capture-otel-metrics.sh ."]
+      timeout_seconds: 600
+
+  # Step 6: OTel regression analysis — compare baseline vs post-change
+  - id: otel_regression_check
+    type: agent
+    depends_on: [post_capture]
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are an OTel regression analyst. Compare the BASELINE metrics snapshot
+        (from baseline_capture) with the POST-CHANGE snapshot (from post_capture).
+
+        Analyze these dimensions:
+        1. **Test regressions**: Any new test failures? Pass count decreased?
+        2. **Build time**: Increased >20% from baseline? Flag as regression.
+        3. **Binary size**: Any binary grew >10%? Flag as regression.
+        4. **Pulse platform metrics** (if available):
+           - task_duration increased significantly?
+           - quality_gate_score decreased?
+           - error rate increased?
+
+        For each regression found, classify severity:
+        - [CRITICAL] New test failures, build broken, quality score dropped below threshold
+        - [HIGH] Build time >20% increase, binary size >10% increase, performance degradation
+        - [LOW] Minor metric changes within acceptable range
+
+        Output format:
+        ## Regression Report
+        - List each regression with [SEVERITY] tag
+        - Include baseline value → post value for each
+
+        ## Verdict
+        End with exactly one of:
+        verdict: approve — no regressions or only LOW changes
+        verdict: request-changes — has HIGH regressions that should be fixed
+        verdict: reject — has CRITICAL regressions, needs rethink
+      max_tokens: 4096
+      context_from: [baseline_capture, post_capture, run_tests]
+      timeout_seconds: 300
+
+  # Step 7: Apply fixes based on OTel regression feedback
+  - id: apply_fixes
+    type: agent
+    depends_on: [otel_regression_check]
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are a developer applying OTel regression feedback.
+
+        Read the regression analysis verdict carefully:
+        - If verdict is "approve": reply "No regressions — OTel approved." Do nothing.
+        - If verdict is "reject": reply "CRITICAL regressions — escalating to human." Do nothing.
+        - If verdict is "request-changes": fix only [HIGH] regressions:
+          - Build time regression: remove unnecessary deps, optimize hot paths
+          - Binary size regression: check for bloated dependencies, remove unused code
+          - Test regressions: fix broken tests
+          - Performance regression: profile and fix bottlenecks
+
+        Do NOT attempt to fix [CRITICAL] issues — those need human review.
+        Run tests after changes to verify nothing breaks.
+      max_tokens: 4096
+      context_from: [otel_regression_check]
+      timeout_seconds: 600
+
+  # Step 8: Final validation — retest after fixes
+  - id: final_validation
+    type: function
+    depends_on: [apply_fixes]
+    executor: plugin-test-runner
+    config:
+      command: ["plugin-test-runner", "validate"]
+      action: validate
+      timeout_seconds: 120

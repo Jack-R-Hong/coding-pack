@@ -4,6 +4,7 @@ enabled: true
 imports: []
 members:
   workflows:
+    - coding-otel-validated-dev
     - coding-quick-dev
     - coding-feature-dev
     - coding-bug-fix
