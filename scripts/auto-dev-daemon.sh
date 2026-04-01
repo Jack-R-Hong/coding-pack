@@ -8,13 +8,26 @@
 #
 # Stop: kill the process or Ctrl-C
 
-set -euo pipefail
+set -uo pipefail
 
 INTERVAL=${1:-60}
 PORT=${PULSE_API_PORT:-8080}
 BASE_URL="http://127.0.0.1:$PORT"
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-CONFIG_PATH="$SCRIPT_DIR/config/auto-loop.yaml"
+LOCKFILE="$SCRIPT_DIR/.auto-dev.lock"
+
+# Prevent multiple daemon instances
+if [ -f "$LOCKFILE" ]; then
+    OLD_PID=$(cat "$LOCKFILE" 2>/dev/null)
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        echo "[auto-dev] Another daemon is running (PID $OLD_PID). Exiting."
+        exit 1
+    fi
+    echo "[auto-dev] Stale lock file found (PID $OLD_PID dead). Removing."
+    rm -f "$LOCKFILE"
+fi
+echo $$ > "$LOCKFILE"
+trap 'rm -f "$LOCKFILE"; exit' INT TERM EXIT
 
 echo "[auto-dev] Starting daemon (interval=${INTERVAL}s, port=$PORT)"
 cd "$SCRIPT_DIR"

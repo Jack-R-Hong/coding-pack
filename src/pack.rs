@@ -3,7 +3,7 @@ use crate::util::is_executable;
 use crate::validator;
 use crate::workspace::WorkspaceConfig;
 use pulse_plugin_sdk::error::WitPluginError;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
@@ -937,7 +937,7 @@ fn extract_bmad_agent_id(text: &str) -> Option<String> {
         .take_while(|c| c.is_alphanumeric() || *c == '/' || *c == '-' || *c == '_')
         .collect();
     // Strip trailing punctuation that might have been included
-    let id = id.trim_end_matches(|c: char| c == '.' || c == ',');
+    let id = id.trim_end_matches(['.', ',']);
     if id.len() > "bmad/".len() {
         Some(id.to_string())
     } else {
@@ -1176,6 +1176,145 @@ fn execute_data_mutate(
     };
     serde_json::to_string_pretty(&result)
         .map_err(|e| WitPluginError::internal(format!("JSON serialization error: {e}")))
+}
+
+/// Snapshot of key Pulse runtime metrics extracted from the Prometheus text endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct PulseMetricsSnapshot {
+    /// Total tasks that reached the `completed` state.
+    pub tasks_completed: u64,
+    /// Total tasks that reached the `failed` state.
+    pub tasks_failed: u64,
+    /// Tasks currently in the `running` state.
+    pub tasks_running: u64,
+    /// Sum of all LLM token counters (`pulse_llm_tokens_total`).
+    pub total_llm_tokens: u64,
+    /// Average task duration in seconds (`pulse_task_duration_seconds_sum / _count`).
+    /// Returns `0.0` when no tasks have been observed.
+    pub avg_step_duration_secs: f64,
+}
+
+impl Default for PulseMetricsSnapshot {
+    fn default() -> Self {
+        Self {
+            tasks_completed: 0,
+            tasks_failed: 0,
+            tasks_running: 0,
+            total_llm_tokens: 0,
+            avg_step_duration_secs: 0.0,
+        }
+    }
+}
+
+/// Query `http://127.0.0.1:{port}/api/v1/metrics`, parse the Prometheus text
+/// format response, and return a [`PulseMetricsSnapshot`].
+///
+/// # Parsing rules
+/// - Lines beginning with `#` are skipped (comments / TYPE / HELP).
+/// - `pulse_tasks_total{..state="completed"..}` → `tasks_completed`
+/// - `pulse_tasks_total{..state="failed"..}`    → `tasks_failed`
+/// - `pulse_tasks_total{..state="running"..}`   → `tasks_running`
+/// - All `pulse_llm_tokens_total{..}` samples are summed into `total_llm_tokens`.
+/// - `pulse_task_duration_seconds_sum` and `pulse_task_duration_seconds_count`
+///   are accumulated; `avg_step_duration_secs = sum / count`.
+///
+/// Returns `Ok` with all-zero values when the endpoint responds with an empty body.
+/// Returns `Err` on HTTP / connection failures or unparseable numeric values.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn fetch_pulse_metrics(port: u16) -> Result<PulseMetricsSnapshot, String> {
+    let url = format!("http://127.0.0.1:{port}/api/v1/metrics");
+    let body = reqwest::blocking::get(&url)
+        .map_err(|e| format!("HTTP request failed: {e}"))?
+        .text()
+        .map_err(|e| format!("Failed to read response body: {e}"))?;
+
+    parse_prometheus_metrics(&body)
+}
+
+/// Pure parser so it can be exercised in unit tests without a live server.
+fn parse_prometheus_metrics(body: &str) -> Result<PulseMetricsSnapshot, String> {
+    let mut snap = PulseMetricsSnapshot::default();
+    let mut duration_sum: f64 = 0.0;
+    let mut duration_count: f64 = 0.0;
+
+    for raw_line in body.lines() {
+        let line = raw_line.trim();
+        // Skip comments, TYPE/HELP metadata, and blank lines.
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Split into metric-name-with-labels and value.
+        // Prometheus text format: <metric_name>[{labels}] <value> [timestamp]
+        let (name_part, value_str) = split_metric_line(line)?;
+
+        if name_part.starts_with("pulse_tasks_total") {
+            let value = parse_u64(value_str, name_part)?;
+            if name_part.contains("state=\"completed\"") {
+                snap.tasks_completed = snap.tasks_completed.saturating_add(value);
+            } else if name_part.contains("state=\"failed\"") {
+                snap.tasks_failed = snap.tasks_failed.saturating_add(value);
+            } else if name_part.contains("state=\"running\"") {
+                snap.tasks_running = snap.tasks_running.saturating_add(value);
+            }
+        } else if name_part.starts_with("pulse_llm_tokens_total") {
+            let value = parse_u64(value_str, name_part)?;
+            snap.total_llm_tokens = snap.total_llm_tokens.saturating_add(value);
+        } else if name_part.starts_with("pulse_task_duration_seconds_sum") {
+            duration_sum += parse_f64(value_str, name_part)?;
+        } else if name_part.starts_with("pulse_task_duration_seconds_count") {
+            duration_count += parse_f64(value_str, name_part)?;
+        }
+    }
+
+    if duration_count > 0.0 {
+        snap.avg_step_duration_secs = duration_sum / duration_count;
+    }
+
+    Ok(snap)
+}
+
+/// Split a Prometheus text-format line into `(name_with_labels, value)`.
+///
+/// The value field may be followed by an optional timestamp; we only need the
+/// first whitespace-separated token after the metric identifier.
+fn split_metric_line(line: &str) -> Result<(&str, &str), String> {
+    // Find the boundary: first space/tab that is *outside* the label block `{…}`.
+    let bytes = line.as_bytes();
+    let mut in_braces = false;
+    let mut split_pos = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'{' => in_braces = true,
+            b'}' => in_braces = false,
+            b' ' | b'\t' if !in_braces => {
+                split_pos = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let pos = split_pos.ok_or_else(|| format!("Malformed metric line (no value): {line}"))?;
+    let name_part = line[..pos].trim();
+    // The remainder may be "value timestamp" — grab only the value token.
+    let rest = line[pos..].trim();
+    let value_str = rest.split_ascii_whitespace().next().unwrap_or(rest);
+    Ok((name_part, value_str))
+}
+
+fn parse_u64(s: &str, ctx: &str) -> Result<u64, String> {
+    // Prometheus occasionally emits integers as floats (e.g. `42.0`).
+    if let Ok(v) = s.parse::<u64>() {
+        return Ok(v);
+    }
+    s.parse::<f64>()
+        .map(|f| f as u64)
+        .map_err(|_| format!("Cannot parse u64 from {s:?} (metric: {ctx})"))
+}
+
+fn parse_f64(s: &str, ctx: &str) -> Result<f64, String> {
+    s.parse::<f64>()
+        .map_err(|_| format!("Cannot parse f64 from {s:?} (metric: {ctx})"))
 }
 
 #[cfg(test)]
