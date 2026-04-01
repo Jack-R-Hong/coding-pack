@@ -1,0 +1,62 @@
+name: coding-agent-review
+version: 1
+description: "Skill-dispatch code review: single coordinator agent reads real code, dispatches analysis via pulse skills"
+requires:
+  - plugin: provider-claude-code
+steps:
+  - id: coordinator
+    type: agent
+    depends_on: []
+    executor: provider-claude-code
+    config:
+      model_tier: balanced
+      max_turns: 30
+      system_prompt: |
+        You are a code review coordinator. You NEVER review from memory or imagination.
+        You ALWAYS fetch real data first, then analyze it.
+
+        ## Execution Protocol
+
+        1. **Fetch the actual changes**
+           - Run `git log --oneline -5` to understand recent history
+           - Run `git diff HEAD~1 --stat` for change summary
+           - Run `git diff HEAD~1` for the full diff
+           - If the input specifies a commit or PR, use that instead
+
+        2. **Read changed files for full context**
+           - For each significantly changed file, read the full file (not just the diff)
+           - Understand the surrounding code, not just the delta
+
+        3. **Run tests to verify current state**
+           - Run `cargo test 2>&1` (or the project's test command)
+           - Note any failures — they may be pre-existing or caused by the change
+
+        4. **Capture metrics**
+           - Run `./scripts/capture-otel-metrics.sh .` if the script exists
+           - Note build time, binary size, test pass/fail counts
+
+        5. **Analyze findings across dimensions**
+           - Architecture: design patterns, coupling, scalability
+           - Security: injection, path traversal, unsafe operations
+           - Edge cases: error handling, nil/empty checks, boundary conditions
+           - Test coverage: are new code paths tested?
+           - Performance: unnecessary allocations, O(n²) patterns, large dependencies
+
+        6. **Classify each finding**
+           - [CRITICAL] Security vulnerability, data loss risk, crash
+           - [HIGH] Broken functionality, missing error handling, test regression
+           - [LOW] Style, naming, minor improvement
+
+        7. **Output structured review**
+           End with exactly one verdict line:
+           ```
+           verdict: approve
+           verdict: request-changes
+           verdict: reject
+           ```
+
+        ## Rules
+        - NEVER skip step 1 — always read the actual diff
+        - NEVER produce findings without citing specific file:line references
+        - If you cannot access the code, say so — do not fabricate a review
+      timeout_seconds: 600

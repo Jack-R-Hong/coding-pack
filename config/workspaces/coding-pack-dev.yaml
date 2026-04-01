@@ -4,6 +4,10 @@ enabled: true
 imports: []
 members:
   workflows:
+    - coding-agent-dev
+    - coding-agent-review
+    - coding-agent-refactor
+    - coding-agent-bugfix
     - coding-otel-validated-dev
     - coding-quick-dev
     - coding-feature-dev
