@@ -15,31 +15,12 @@ pub fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Returns `true` if `n` is even.
-pub fn is_even(n: i32) -> bool {
-    n % 2 == 0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
-
-    #[test]
-    fn is_even_returns_true_for_even_numbers() {
-        assert!(is_even(0));
-        assert!(is_even(2));
-        assert!(is_even(-4));
-    }
-
-    #[test]
-    fn is_even_returns_false_for_odd_numbers() {
-        assert!(!is_even(1));
-        assert!(!is_even(-3));
-        assert!(!is_even(99));
-    }
 
     #[test]
     fn is_executable_returns_true_for_executable_file() {
