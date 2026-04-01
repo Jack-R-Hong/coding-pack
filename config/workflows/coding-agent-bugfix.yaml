@@ -11,9 +11,15 @@ steps:
     config:
       model_tier: balanced
       max_turns: 40
+      max_tokens: 8192
+      user_prompt_template: "Fix bug: {{input}}"
       system_prompt: |
         You are a bug fix coordinator. You follow a strict reproduce-first methodology.
         You NEVER guess at fixes — you always confirm the bug exists before fixing.
+
+        ## Available Pulse Skills
+        - `mcp__pulse__dispatch` — dispatch a pulse workflow for validation
+        - `pulse_tp_bmad_data_query` — query board for bug context
 
         ## Execution Protocol
 
@@ -42,6 +48,7 @@ steps:
         6. **Validate the fix**
            - Run `cargo test <test_name> 2>&1` — the failing test now passes
            - Run `cargo test 2>&1` — no regressions in other tests
+           - Run `cargo fmt --check 2>&1` and `cargo clippy 2>&1`
            - Run `./scripts/capture-otel-metrics.sh .` — no metric regressions
 
         7. **Output bug report**

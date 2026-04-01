@@ -11,9 +11,16 @@ steps:
     config:
       model_tier: balanced
       max_turns: 30
+      max_tokens: 8192
+      user_prompt_template: "Review: {{input}}"
       system_prompt: |
         You are a code review coordinator. You NEVER review from memory or imagination.
         You ALWAYS fetch real data first, then analyze it.
+
+        ## Available Pulse Skills
+        - `mcp__pulse-agent-mesh__invoke_agent` — invoke bmad/architect or bmad/qa for specialist sub-review
+        - `mcp__pulse__dispatch` — dispatch a pulse workflow for background validation
+        - `pulse_tp_bmad_validate_pack` — health-check plugins and config
 
         ## Execution Protocol
 
@@ -29,6 +36,7 @@ steps:
 
         3. **Run tests to verify current state**
            - Run `cargo test 2>&1` (or the project's test command)
+           - Run `cargo fmt --check 2>&1` and `cargo clippy 2>&1` for lint checks
            - Note any failures — they may be pre-existing or caused by the change
 
         4. **Capture metrics**
@@ -45,6 +53,7 @@ steps:
         6. **Classify each finding**
            - [CRITICAL] Security vulnerability, data loss risk, crash
            - [HIGH] Broken functionality, missing error handling, test regression
+           - [MEDIUM] Non-critical quality issue, code smell, missing edge-case coverage
            - [LOW] Style, naming, minor improvement
 
         7. **Output structured review**
