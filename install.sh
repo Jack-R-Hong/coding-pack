@@ -94,6 +94,7 @@ mkdir -p "$DEST"
 # Orchestrator binary
 src="$PLUGIN_DIR/target/release/plugin-coding-pack"
 if [[ -f "$src" ]]; then
+  rm -f "$DEST/plugin-coding-pack"
   cp "$src" "$DEST/"
   ok "plugin-coding-pack → $DEST/"
 else
@@ -118,6 +119,7 @@ for name in "${SIBLINGS[@]}"; do
   bin="${BIN_NAMES[$name]}"
   src="$SIBLINGS_DIR/$name/target/release/$bin"
   if [[ -f "$src" ]]; then
+    rm -f "$DEST/$bin"
     cp "$src" "$DEST/"
     ok "$bin → $DEST/"
   else

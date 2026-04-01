@@ -1,0 +1,48 @@
+name: coding-pack-dev
+description: "Workspace for developing the coding-pack plugin itself"
+enabled: true
+imports: []
+members:
+  workflows:
+    - coding-quick-dev
+    - coding-feature-dev
+    - coding-bug-fix
+    - coding-refactor
+    - coding-review
+    - coding-story-dev
+    - coding-hotfix
+    - coding-pr-fix
+    - coding-docs
+    - coding-migration
+    - coding-perf-review
+    - coding-security-audit
+    - coding-parallel-review
+    - coding-release
+    - bootstrap-plugin
+    - bootstrap-rebuild
+    - bootstrap-cycle
+    - project-init
+  agents: []
+  policies: []
+agent_overrides: {}
+plugins:
+  provider-claude-code:
+    enabled: true
+  bmad-method:
+    enabled: true
+  plugin-git-ops:
+    enabled: true
+  plugin-git-worktree:
+    enabled: true
+  plugin-test-runner:
+    enabled: true
+  plugin-board:
+    enabled: true
+  plugin-auto-loop:
+    enabled: true
+  plugin-feedback-loop:
+    enabled: true
+  plugin-issue-sync:
+    enabled: true
+  plugin-workspace-tracker:
+    enabled: true

@@ -8,12 +8,11 @@ version = "0.1.0"
 author = "Jack"
 
 [plugins]
-provider-claude-code = { version = ">=0.1.0", source = "local:../pulse-plugins/provider-claude-code" }
-plugin-git-ops       = { version = ">=0.1.0", source = "local:../pulse-plugins/git-ops" }
-plugin-git-worktree  = { version = ">=0.1.0", source = "local:../pulse-plugins/git-worktree" }
-bmad-method          = { version = ">=0.1.0", source = "local:../pulse-plugins/bmad-method" }
-plugin-board         = { version = ">=0.1.0", source = "local:../pulse-plugins/plugin-board", optional = true }
-plugin-memory        = { version = ">=0.1.0", source = "local:config/plugins/plugin-memory", optional = true }
+provider-claude-code = { version = ">=0.1.0", source = "local:../../provider-claude-code" }
+plugin-git-ops       = { version = ">=0.1.0", source = "local:../../git-ops" }
+plugin-git-worktree  = { version = ">=0.1.0", source = "local:../../git-worktree" }
+bmad-method          = { version = ">=0.1.0", source = "local:../../bmad-method" }
+plugin-board         = { version = ">=0.1.0", source = "local:../../plugin-board", optional = true }
 
 [workflows]
 include = [
@@ -23,7 +22,6 @@ include = [
   "config/workflows/coding-refactor.yaml",
   "config/workflows/coding-story-dev.yaml",
   "config/workflows/coding-quick-dev.yaml",
-  "config/workflows/coding-memory-index.yaml",
   "config/workflows/bootstrap-plugin.yaml",
   "config/workflows/bootstrap-rebuild.yaml",
   "config/workflows/bootstrap-cycle.yaml",

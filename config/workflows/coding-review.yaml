@@ -1,38 +1,51 @@
 name: coding-review
 version: 1
-description: "Multi-layer code review: adversarial + edge-case analysis in parallel, then synthesis"
+description: "Multi-layer code review: architecture + QA analysis, then synthesis"
 requires:
   - plugin: bmad-method
+  - plugin: provider-claude-code
 steps:
-  # Step 0 (optional): Knowledge graph context for review
-  - id: code_review_session
-    type: session
+  # Step 1: Architecture review
+  - id: arch_review
+    type: agent
     depends_on: []
+    executor: bmad-method
     config:
-      participants:
-        - agent: bmad/architect
-          activation: every_turn
-        - agent: bmad/qa
-          activation: every_turn
-      convergence:
-        strategy: unanimous
-        max_turns: 4
-      system_prompt: "Perform a thorough code review. Evaluate architecture, edge cases, and quality. Reach consensus on approval or changes needed."
-      context_from: [memory_context]
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/architect. Perform a thorough architectural code review.
+        Evaluate design patterns, scalability, maintainability, and coupling.
+        List findings with severity levels: [CRITICAL], [HIGH], [MEDIUM], [LOW].
+      max_tokens: 4096
+      timeout_seconds: 300
 
-  # Synthesize session findings into final verdict
+  # Step 2: QA review (runs in parallel with arch_review)
+  - id: qa_review
+    type: agent
+    depends_on: []
+    executor: bmad-method
+    config:
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/qa. Perform a thorough quality-focused code review.
+        Evaluate edge cases, error handling, security, and test coverage.
+        List findings with severity levels: [CRITICAL], [HIGH], [MEDIUM], [LOW].
+      max_tokens: 4096
+      timeout_seconds: 300
+
+  # Step 3: Synthesize findings into final verdict
   - id: review_synthesis
     type: agent
-    depends_on: [code_review_session]
+    depends_on: [arch_review, qa_review]
     executor: provider-claude-code
     config:
       model_tier: balanced
       system_prompt: |
-        Synthesize the code review discussion into a final verdict.
+        Synthesize the architecture and QA review findings into a final verdict.
         Categorize findings by severity (critical/high/medium/low) and provide actionable fix suggestions.
         End your review with a verdict line in exactly this format:
         verdict: approve OR verdict: request-changes OR verdict: reject
       user_prompt_template: "Synthesize review findings into a prioritized action list"
       max_tokens: 4096
-      context_from: [code_review_session]
+      context_from: [arch_review, qa_review]
       timeout_seconds: 300

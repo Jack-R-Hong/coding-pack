@@ -26,21 +26,21 @@ steps:
       context_from: [memory_context]
       timeout_seconds: 300
 
-  # Step 1b: Multi-agent architecture review session
+  # Step 1b: Architecture review (QA perspective)
   - id: architecture_review
-    type: session
+    type: agent
     depends_on: [architect_design]
+    executor: bmad-method
     config:
-      participants:
-        - agent: bmad/architect
-          activation: every_turn
-        - agent: bmad/qa
-          activation: every_turn
-      convergence:
-        strategy: fixed_turns
-        max_turns: 4
-      system_prompt: "Review the proposed architecture for quality, scalability, and maintainability. Debate trade-offs and identify potential issues."
+      model_tier: balanced
+      system_prompt: |
+        You are bmad/qa reviewing a proposed architecture.
+        Evaluate for quality, scalability, and maintainability.
+        Identify trade-offs and potential issues.
+        Provide a concise verdict: approve or request-changes with specific feedback.
+      max_tokens: 4096
       context_from: [architect_design]
+      timeout_seconds: 300
 
   # Step 2: Create isolated worktree for development
   - id: create_worktree
